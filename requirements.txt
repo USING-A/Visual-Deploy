@@ -1,0 +1,30 @@
+# Runtime dependencies for moving Visual-Deploy to a deployment PC.
+# Run from the repository root:
+#   python -m pip install -r requirements.txt
+
+numpy==1.26.4
+opencv-python==4.13.0.92
+PyYAML==6.0.3
+
+# Match the validated runtime family. For CUDA-specific installs, install the
+# matching PyTorch build first, then rerun this file if needed.
+torch==2.0.1
+torchvision==0.15.2
+
+# YOLOv10-compatible Ultralytics wheel vendored from yolov10-improved.
+./vendor/ultralytics-8.1.34-py3-none-any.whl
+pillow>=7.1.2
+requests>=2.23.0
+scipy>=1.4.1
+tqdm>=4.64.0
+psutil==5.9.8
+py-cpuinfo==9.0.0
+thop>=0.1.1
+pandas>=1.1.4
+seaborn>=0.11.0
+huggingface-hub==0.23.2
+safetensors==0.4.3
+
+# RealSense D435i runtime. If installation fails on a target PC, install the
+# Intel RealSense SDK first, then rerun requirements installation.
+pyrealsense2
