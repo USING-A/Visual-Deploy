@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visual-deploy"
+version = "0.1.0"
+description = "Self-contained RGB-D visual grasp deployment pipeline"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "opencv-python",
+  "pyyaml",
+  "torch",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+realsense = ["pyrealsense2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

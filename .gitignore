@@ -1,0 +1,8 @@
+.worktrees/
+worktrees/
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+runs/
+weights/
