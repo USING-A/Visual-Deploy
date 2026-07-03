@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import Any
+
+import cv2
+import numpy as np
+
+from visual_deploy.geometry.backproject import backproject_pixel
+from visual_deploy.geometry.grasp_patch import GraspPatch, select_grasp_patch
+from visual_deploy.geometry.pose import approach_from_normal
+from visual_deploy.geometry.roi import RoiTransform
+from visual_deploy.ranking.target_ranker import CandidateScores, TargetRanker
+from visual_deploy.recording.recorder import RunRecorder
+from visual_deploy.tracking.depth_fusion import DepthFusionBuffer, FusedTrackDepth
+from visual_deploy.tracking.tracker import ConfidenceGate, DepthRoiStats, SimpleIoUTracker
+from visual_deploy.types import DeployFrame, Detection, GraspTarget, Track
+
+
+class OfflinePipeline:
+    def __init__(self, detector: Any, segmentor: Any, config: dict[str, Any] | None = None) -> None:
+        self.detector = detector
+        self.segmentor = segmentor
+        self.config = config or {}
+
+        tracking_cfg = self.config.get("tracking", {})
+        self.gate = ConfidenceGate(
+            high_threshold=float(tracking_cfg.get("high_conf_threshold", 0.7)),
+            low_threshold=float(tracking_cfg.get("low_conf_threshold", 0.4)),
+        )
+        self.depth_stats = DepthRoiStats(**_pick(self.config.get("depth_fusion", {}), "min_depth_mm", "max_depth_mm"))
+        self.min_hits = int(tracking_cfg.get("min_hits", 1))
+        self.tracker = SimpleIoUTracker(
+            iou_threshold=float(tracking_cfg.get("iou_threshold", 0.3)),
+            max_lost=int(tracking_cfg.get("max_lost", 30)),
+            min_hits=self.min_hits,
+        )
+        self.depth_fusion = DepthFusionBuffer(**_pick(self.config.get("depth_fusion", {}), "window_size", "min_depth_mm", "max_depth_mm", "min_valid_ratio"))
+        self.ranker = TargetRanker(weights=self.config.get("ranking", {}).get("weights"))
+
+        recording_cfg = self.config.get("recording", {})
+        self.recorder = RunRecorder(recording_cfg.get("output_root", "runs"), config=self.config)
+
+    def process_frame(self, frame: DeployFrame) -> GraspTarget:
+        _validate_frame(frame)
+        detections = self.detector.infer(frame.color_bgr)
+        gated = self.gate.apply(_attach_depth_stats(detections, frame.depth_mm, self.depth_stats))
+        tracks = self.tracker.update(gated)
+        self.recorder.write_detection(
+            {
+                "frame_id": frame.frame_id,
+                "timestamp_ms": frame.timestamp_ms,
+                "detections": [_detection_record(detection) for detection in gated],
+            }
+        )
+
+        candidates: list[_PipelineCandidate] = []
+        for track in tracks:
+            if track.state != "confirmed":
+                continue
+            candidate = self._process_track(frame, track)
+            if candidate is not None:
+                candidates.append(candidate)
+
+        self.recorder.write_candidate(
+            {
+                "frame_id": frame.frame_id,
+                "timestamp_ms": frame.timestamp_ms,
+                "candidates": [candidate.to_record() for candidate in candidates],
+            }
+        )
+
+        ranked = self.ranker.rank([candidate.scores for candidate in candidates])
+        if not ranked:
+            target = GraspTarget(valid=False, frame_id=frame.frame_id, reason="no_valid_grasp_candidate")
+            self.recorder.write_target(asdict(target))
+            return target
+
+        best_score = ranked[0]
+        best = next(candidate for candidate in candidates if candidate.track.track_id == best_score.track_id)
+        u_img, v_img = best.roi_transform.roi_to_image(best.patch.u_px, best.patch.v_px)
+        z_mm = best.patch.z_m / float(frame.intrinsics.depth_scale)
+        xyz = backproject_pixel(u_img, v_img, z_mm, frame.intrinsics)
+        approach = approach_from_normal(best.patch.normal_xyz)
+        target = GraspTarget(
+            valid=True,
+            frame_id=frame.frame_id,
+            track_id=best.track.track_id,
+            u_px=float(u_img),
+            v_px=float(v_img),
+            z_mm=float(z_mm),
+            xyz_camera_m=tuple(float(value) for value in xyz),
+            normal_xyz=tuple(float(value) for value in best.patch.normal_xyz),
+            approach_axis=tuple(float(value) for value in approach),
+            target_score=float(best_score.target_score),
+        )
+        self.recorder.write_target(asdict(target))
+        return target
+
+    def _process_track(self, frame: DeployFrame, track: Track) -> _PipelineCandidate | None:
+        height, width = frame.color_bgr.shape[:2]
+        roi_size = 256
+        roi = RoiTransform.from_bbox(
+            track.bbox_xyxy,
+            float(self.config.get("roi", {}).get("pad_ratio", 0.2)),
+            width,
+            height,
+            roi_size,
+        )
+        color_roi, depth_roi = _crop_resize(frame.color_bgr, frame.depth_mm, roi)
+        fused = self.depth_fusion.update(track.track_id, frame.frame_id, frame.timestamp_ms, roi, depth_roi)
+        if fused.valid_ratio <= 0.0:
+            return None
+
+        segment = self.segmentor.infer(color_roi, fused.depth_roi_mm)
+        patch = select_grasp_patch(
+            segment.mask_256,
+            fused.depth_roi_mm,
+            roi.adjust_intrinsics(frame.intrinsics),
+            **_pick(
+                self.config.get("grasp", {}),
+                "patch_radius_px",
+                "stride_px",
+                "min_component_area_px",
+                "min_valid_depth_ratio",
+                "min_valid_depth_count",
+                "max_plane_rmse_m",
+                "max_depth_mad_m",
+                "min_score",
+            ),
+        )
+        if patch is None:
+            return None
+
+        scores = CandidateScores(
+            track_id=track.track_id,
+            grasp_score=float(patch.score),
+            depth_valid_score=float(fused.valid_ratio),
+            track_confidence=float(track.weighted_confidence if track.weighted_confidence is not None else track.confidence),
+            track_stability=min(float(track.hits) / max(float(self.min_hits), 1.0), 1.0),
+            mask_quality_score=float(segment.largest_component_ratio),
+        )
+        return _PipelineCandidate(track=track, roi_transform=roi, depth=fused, patch=patch, scores=scores)
+
+
+class _PipelineCandidate:
+    def __init__(
+        self,
+        track: Track,
+        roi_transform: RoiTransform,
+        depth: FusedTrackDepth,
+        patch: GraspPatch,
+        scores: CandidateScores,
+    ) -> None:
+        self.track = track
+        self.roi_transform = roi_transform
+        self.depth = depth
+        self.patch = patch
+        self.scores = scores
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "track_id": self.track.track_id,
+            "bbox_xyxy": list(self.track.bbox_xyxy),
+            "roi_crop_xyxy": list(self.roi_transform.crop_xyxy),
+            "grasp": {
+                "u_roi_px": self.patch.u_px,
+                "v_roi_px": self.patch.v_px,
+                "z_m": self.patch.z_m,
+                "score": self.patch.score,
+                "valid_depth_ratio": self.patch.valid_depth_ratio,
+                "valid_depth_count": self.patch.valid_depth_count,
+                "plane_rmse_m": self.patch.plane_rmse_m,
+                "depth_mad_m": self.patch.depth_mad_m,
+                "normal_xyz": [float(value) for value in self.patch.normal_xyz],
+            },
+            "depth_fusion": {
+                "valid_ratio": self.depth.valid_ratio,
+                "source_frame_count": self.depth.source_frame_count,
+                "age_ms": self.depth.age_ms,
+            },
+            "scores": asdict(self.scores),
+        }
+
+
+def _pick(source: dict[str, Any], *names: str) -> dict[str, Any]:
+    return {name: source[name] for name in names if name in source}
+
+
+def _validate_frame(frame: DeployFrame) -> None:
+    if frame.color_bgr.ndim != 3 or frame.color_bgr.shape[2] != 3:
+        raise ValueError("frame.color_bgr must have shape (height, width, 3)")
+    if frame.depth_mm.ndim != 2:
+        raise ValueError("frame.depth_mm must be a 2D array")
+    if frame.depth_mm.shape != frame.color_bgr.shape[:2]:
+        raise ValueError("frame.depth_mm must match color frame height and width")
+
+
+def _attach_depth_stats(
+    detections: list[Detection],
+    depth_mm: np.ndarray,
+    extractor: DepthRoiStats,
+) -> list[Detection]:
+    for detection in detections:
+        detection.depth_stats = extractor.extract(depth_mm, detection.bbox_xyxy)
+    return detections
+
+
+def _crop_resize(color_bgr: np.ndarray, depth_mm: np.ndarray, roi: RoiTransform) -> tuple[np.ndarray, np.ndarray]:
+    x0, y0, x1, y1 = roi.crop_xyxy
+    color_crop = color_bgr[y0:y1, x0:x1]
+    depth_crop = depth_mm[y0:y1, x0:x1]
+    color_roi = cv2.resize(color_crop, (roi.roi_size, roi.roi_size), interpolation=cv2.INTER_LINEAR)
+    depth_roi = cv2.resize(depth_crop, (roi.roi_size, roi.roi_size), interpolation=cv2.INTER_NEAREST)
+    return color_roi, depth_roi.astype(np.float32, copy=False)
+
+
+def _detection_record(detection: Detection) -> dict[str, Any]:
+    return {
+        "bbox_xyxy": list(detection.bbox_xyxy),
+        "class_id": detection.class_id,
+        "confidence": detection.confidence,
+        "weighted_confidence": detection.weighted_confidence,
+        "label": detection.label,
+        "track_id": detection.track_id,
+        "depth_stats": asdict(detection.depth_stats),
+    }
