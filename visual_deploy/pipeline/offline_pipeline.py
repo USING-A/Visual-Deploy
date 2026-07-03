@@ -6,6 +6,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from visual_deploy.debug.snapshot import DebugSnapshot
 from visual_deploy.geometry.backproject import backproject_pixel
 from visual_deploy.geometry.grasp_patch import GraspPatch, select_grasp_patch
 from visual_deploy.geometry.pose import approach_from_normal
@@ -37,6 +38,7 @@ class OfflinePipeline:
         )
         self.depth_fusion = DepthFusionBuffer(**_pick(self.config.get("depth_fusion", {}), "window_size", "min_depth_mm", "max_depth_mm", "min_valid_ratio"))
         self.ranker = TargetRanker(weights=self.config.get("ranking", {}).get("weights"))
+        self.last_debug: DebugSnapshot | None = None
 
         recording_cfg = self.config.get("recording", {})
         self.recorder = RunRecorder(recording_cfg.get("output_root", "runs"), config=self.config)
@@ -74,6 +76,7 @@ class OfflinePipeline:
         if not ranked:
             target = GraspTarget(valid=False, frame_id=frame.frame_id, reason="no_valid_grasp_candidate")
             self.recorder.write_target(asdict(target))
+            self.last_debug = _debug_snapshot(frame, gated, target, candidates)
             return target
 
         best_score = ranked[0]
@@ -95,6 +98,7 @@ class OfflinePipeline:
             target_score=float(best_score.target_score),
         )
         self.recorder.write_target(asdict(target))
+        self.last_debug = _debug_snapshot(frame, gated, target, candidates)
         return target
 
     def _process_track(self, frame: DeployFrame, track: Track) -> _PipelineCandidate | None:
@@ -113,6 +117,7 @@ class OfflinePipeline:
             return None
 
         segment = self.segmentor.infer(color_roi, fused.depth_roi_mm)
+        image_mask = _mask_to_image(segment.mask_256, roi, height, width)
         patch = select_grasp_patch(
             segment.mask_256,
             fused.depth_roi_mm,
@@ -140,7 +145,14 @@ class OfflinePipeline:
             track_stability=min(float(track.hits) / max(float(self.min_hits), 1.0), 1.0),
             mask_quality_score=float(segment.largest_component_ratio),
         )
-        return _PipelineCandidate(track=track, roi_transform=roi, depth=fused, patch=patch, scores=scores)
+        return _PipelineCandidate(
+            track=track,
+            roi_transform=roi,
+            depth=fused,
+            patch=patch,
+            scores=scores,
+            image_mask=image_mask,
+        )
 
 
 class _PipelineCandidate:
@@ -151,12 +163,14 @@ class _PipelineCandidate:
         depth: FusedTrackDepth,
         patch: GraspPatch,
         scores: CandidateScores,
+        image_mask: np.ndarray,
     ) -> None:
         self.track = track
         self.roi_transform = roi_transform
         self.depth = depth
         self.patch = patch
         self.scores = scores
+        self.image_mask = image_mask
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -213,6 +227,33 @@ def _crop_resize(color_bgr: np.ndarray, depth_mm: np.ndarray, roi: RoiTransform)
     color_roi = cv2.resize(color_crop, (roi.roi_size, roi.roi_size), interpolation=cv2.INTER_LINEAR)
     depth_roi = cv2.resize(depth_crop, (roi.roi_size, roi.roi_size), interpolation=cv2.INTER_NEAREST)
     return color_roi, depth_roi.astype(np.float32, copy=False)
+
+
+def _mask_to_image(mask_256: np.ndarray, roi: RoiTransform, height: int, width: int) -> np.ndarray:
+    x0, y0, x1, y1 = roi.crop_xyxy
+    resized = cv2.resize(
+        mask_256.astype(np.uint8),
+        (roi.crop_width, roi.crop_height),
+        interpolation=cv2.INTER_NEAREST,
+    ).astype(bool)
+    image_mask = np.zeros((height, width), dtype=bool)
+    image_mask[y0:y1, x0:x1] = resized
+    return image_mask
+
+
+def _debug_snapshot(
+    frame: DeployFrame,
+    detections: list[Detection],
+    target: GraspTarget,
+    candidates: list[_PipelineCandidate],
+) -> DebugSnapshot:
+    return DebugSnapshot(
+        frame_id=frame.frame_id,
+        timestamp_ms=frame.timestamp_ms,
+        detections=list(detections),
+        masks=[candidate.image_mask for candidate in candidates],
+        target=target,
+    )
 
 
 def _detection_record(detection: Detection) -> dict[str, Any]:

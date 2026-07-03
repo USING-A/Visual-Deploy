@@ -45,6 +45,7 @@ requirements.txt                    Deployment environment requirements
 vendor/                             Vendored YOLOv10-compatible wheel
 weights/                            Local model weights, ignored by Git
 scripts/export_gcnet_l03_inference.py
+scripts/run_debug_viewer.py
 scripts/run_offline_smoke.py
 scripts/run_realtime.py
 visual_deploy/                      Runtime package
@@ -149,7 +150,48 @@ With D435i connected and both weights present:
 ```
 
 `camera.align_to_color` must remain `true`; detections and grasp points are
-color-frame pixels.
+color-frame pixels. The RealSense source uses `rs.align(rs.stream.color)` and
+converts the aligned depth frame to millimeters before inference.
+
+## Debug Viewer
+
+For lightweight visual debugging:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_debug_viewer.py --config configs\deploy.yaml
+```
+
+The main RGB view is intentionally sparse: YOLO boxes, optional mask tint, and
+the selected grasp point. Target numbers and controls are shown in a bottom
+status bar instead of being stacked over the image. Detailed records remain in
+JSONL files and terminal output.
+
+Keys:
+
+```text
+q / Esc  quit
+p        pause/resume
+m        show/hide mask
+d        show/hide depth preview
+s        save current debug snapshot under runs/<run>/debug_snapshots/
+```
+
+Small in-image labels are off by default. Enable them only when needed:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_debug_viewer.py --config configs\deploy.yaml --labels
+```
+
+Offline frame check:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_debug_viewer.py `
+  --config configs\deploy.yaml `
+  --rgb samples\rgb.png `
+  --depth samples\depth_mm.npy `
+  --fx 600 --fy 600 --ppx 320 --ppy 240 `
+  --repeat-frames 30
+```
 
 ## Outputs
 

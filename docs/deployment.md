@@ -60,6 +60,10 @@ pyrealsense2
 The runtime requires `camera.align_to_color: true` because detections and grasp
 targets are color-frame pixels.
 
+The current RealSense source enforces this contract. It calls
+`rs.align(rs.stream.color)`, reads the aligned depth frame, and converts depth
+to millimeters before passing RGB-D data to the pipeline.
+
 ## 4. Place Weights
 
 Expected files:
@@ -136,7 +140,44 @@ Use mock models only for plumbing checks:
 
 The command creates a run directory under `runs/` and prints target records.
 
-## 8. Output Contract
+## 8. Debug Viewer
+
+For visual checks with D435i:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_debug_viewer.py --config configs\deploy.yaml
+```
+
+The viewer keeps the main RGB image clean: detection boxes, optional mask tint,
+and the selected grasp point. Target values and controls are shown in a bottom
+status bar, while terminal JSON and `runs/` artifacts keep the detailed
+records.
+
+Keys:
+
+```text
+q / Esc  quit
+p        pause/resume
+m        show/hide mask
+d        show/hide depth preview
+s        save current debug snapshot
+```
+
+Small in-image labels are off by default. Add `--labels` when frame-level id,
+confidence, or target depth labels are useful.
+
+Offline visual check:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_debug_viewer.py `
+  --config configs\deploy.yaml `
+  --rgb samples\rgb.png `
+  --depth samples\depth_mm.npy `
+  --fx 600 --fy 600 --ppx 320 --ppy 240 `
+  --repeat-frames 30
+```
+
+## 9. Output Contract
 
 For a valid target:
 
@@ -152,7 +193,7 @@ target_score     Ranking score
 The repository does not include robot extrinsics, IK, collision checks, or
 workspace checks.
 
-## 9. Test Suite
+## 10. Test Suite
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
