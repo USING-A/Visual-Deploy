@@ -145,8 +145,12 @@ class RGBDGCNetInferenceWrapper(nn.Module):
             if bgr.shape[-2:] != depth_mm.shape[-2:]:
                 raise ValueError(f"BGR and depth spatial shapes must match, got {bgr.shape[-2:]} and {depth_mm.shape[-2:]}")
 
-        rgb = bgr.to(dtype=torch.float32)[:, [2, 1, 0], :, :]
-        depth_m = depth_mm.to(device=rgb.device, dtype=torch.float32) * 0.001
+        # Keep this trace device-agnostic. Deriving a ``device=`` argument from
+        # an example tensor causes torch.jit.trace to capture that example's
+        # device (CPU here) in the serialized graph. The deployment loader
+        # places both inputs on the loaded module's device, so only cast dtype.
+        rgb = torch.flip(bgr.to(dtype=torch.float32), dims=[1])
+        depth_m = depth_mm.to(dtype=torch.float32) * 0.001
         return torch.cat([(rgb - self.rgb_mean) / self.rgb_std, depth_m], dim=1)
 
     def forward(self, bgr: torch.Tensor, depth_mm: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -189,6 +193,60 @@ def assert_wrapper_parity(
     if not torch.equal(eager_mask, traced_mask):
         mismatch = torch.count_nonzero(eager_mask != traced_mask).item()
         raise AssertionError(f"wrapper trace mask parity failed: {mismatch} mismatched pixels")
+
+
+def assert_saved_torchscript_device_compatibility(
+    output: Path,
+    bgr: torch.Tensor,
+    depth_mm: torch.Tensor,
+    atol: float = 1e-2,
+    rtol: float = 1e-2,
+    max_mask_mismatch_ratio: float = 1e-3,
+) -> None:
+    """Verify the serialized artifact works after CPU and CUDA loading.
+
+    The CUDA check uses the same ``torch.jit.load(..., map_location='cuda:0')``
+    route as ``GCNetSegmentor``. This detects traced CPU constants before the
+    artifact is handed to deployment.
+    """
+    cpu_model = torch.jit.load(str(output), map_location="cpu")
+    cpu_model.eval()
+    bgr_cpu = bgr.detach().to(device="cpu", dtype=torch.float32)
+    depth_cpu = depth_mm.detach().to(device="cpu", dtype=torch.float32)
+    with torch.no_grad():
+        cpu_foreground, cpu_mask = cpu_model(bgr_cpu, depth_cpu)
+
+    if not torch.cuda.is_available():
+        print("CUDA unavailable; completed CPU TorchScript reload verification")
+        return
+
+    cuda_device = torch.device("cuda:0")
+    cuda_model = torch.jit.load(str(output), map_location=cuda_device)
+    cuda_model.eval()
+    unexpected_devices = [
+        f"{name}={tensor.device}"
+        for name, tensor in [*cuda_model.named_parameters(), *cuda_model.named_buffers()]
+        if tensor.device != cuda_device
+    ]
+    if unexpected_devices:
+        raise AssertionError(
+            "CUDA-loaded TorchScript contains non-CUDA state: " + ", ".join(unexpected_devices[:8])
+        )
+    with torch.no_grad():
+        cuda_foreground, cuda_mask = cuda_model(bgr_cpu.to(cuda_device), depth_cpu.to(cuda_device))
+    if cuda_foreground.device != cuda_device or cuda_mask.device != cuda_device:
+        raise AssertionError("CUDA-loaded TorchScript returned a CPU output")
+    if not torch.allclose(cpu_foreground, cuda_foreground.cpu(), atol=atol, rtol=rtol):
+        diff = torch.max(torch.abs(cpu_foreground - cuda_foreground.cpu())).item()
+        raise AssertionError(f"CPU/CUDA TorchScript foreground parity failed: max abs diff {diff:.6g}")
+    mismatch = torch.count_nonzero(cpu_mask != cuda_mask.cpu()).item()
+    mismatch_ratio = mismatch / max(cpu_mask.numel(), 1)
+    if mismatch_ratio > max_mask_mismatch_ratio:
+        raise AssertionError(
+            "CPU/CUDA TorchScript mask parity failed: "
+            f"{mismatch} mismatched pixels ({mismatch_ratio:.4%})"
+        )
+    print("Verified serialized TorchScript through CPU and CUDA map_location reloads")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -300,6 +358,7 @@ def main(argv: list[str] | None = None) -> None:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(traced, str(output))
+    assert_saved_torchscript_device_compatibility(output, bgr, depth_mm)
     print(f"Wrote reparameterized RGBD-GCNet inference TorchScript to {output}")
 
 
