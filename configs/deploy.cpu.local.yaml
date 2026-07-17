@@ -1,0 +1,64 @@
+camera:
+  width: 640
+  height: 480
+  fps: 30
+  align_to_color: true
+  spatial_filter: true
+  temporal_filter: false
+  hole_filling_filter: false
+
+detection:
+  weights: weights/yolo_detect.pt
+  model_type: yolov10
+  conf_threshold: 0.25
+  device: cpu
+
+tracking:
+  high_conf_threshold: 0.7
+  low_conf_threshold: 0.4
+  iou_threshold: 0.3
+  min_hits: 2
+  max_lost: 30
+
+roi:
+  size: 256
+  pad_ratio: 0.20
+
+segmentation:
+  weights: weights/rgbd_gcnet_l03_robustft_inference.pt
+  threshold: 0.5
+  device: cpu
+  input_color_order: bgr
+  depth_input_unit: mm
+
+depth_fusion:
+  window_size: 5
+  method: median
+  min_depth_mm: 100
+  max_depth_mm: 5000
+  min_valid_ratio: 0.3
+
+grasp:
+  patch_radius_px: 8
+  stride_px: 4
+  min_component_area_px: 64
+  min_valid_depth_ratio: 0.7
+  min_valid_depth_count: 20
+  max_plane_rmse_m: 0.006
+  max_depth_mad_m: 0.012
+  min_score: 0.0
+
+ranking:
+  weights:
+    grasp_score: 0.45
+    depth_valid_score: 0.20
+    track_confidence: 0.15
+    track_stability: 0.10
+    mask_quality_score: 0.10
+
+recording:
+  output_root: runs
+  save_frames: false
+  save_depth_preview: true
+  save_masks: true
+  save_overlays: true

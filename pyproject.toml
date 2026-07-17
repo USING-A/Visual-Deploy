@@ -18,6 +18,9 @@ dependencies = [
 dev = ["pytest"]
 realsense = ["pyrealsense2"]
 
+[tool.setuptools.packages.find]
+include = ["visual_deploy*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

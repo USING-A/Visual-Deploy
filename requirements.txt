@@ -3,7 +3,7 @@
 #   python -m pip install -r requirements.txt
 
 numpy==1.26.4
-opencv-python==4.13.0.92
+opencv-python==4.11.0.86
 PyYAML==6.0.3
 
 # Match the validated runtime family. For CUDA-specific installs, install the
