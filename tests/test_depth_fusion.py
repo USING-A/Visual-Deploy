@@ -57,6 +57,8 @@ def test_depth_fusion_rejects_fractional_window_size():
         ({"min_depth_mm": 5000.0, "max_depth_mm": 100.0}, "min_depth_mm"),
         ({"min_valid_ratio": -0.1}, "min_valid_ratio"),
         ({"min_valid_ratio": 1.1}, "min_valid_ratio"),
+        ({"min_roi_iou": -0.1}, "min_roi_iou"),
+        ({"min_roi_iou": 1.1}, "min_roi_iou"),
     ],
 )
 def test_depth_fusion_rejects_invalid_config(kwargs, message):
@@ -100,6 +102,20 @@ def test_depth_fusion_resets_track_history_when_crop_changes():
     assert out.source_frame_count == 1
     assert out.age_ms == 0.0
     np.testing.assert_allclose(out.depth_roi_mm, np.ones((2, 2), dtype=np.float32) * 800)
+
+
+def test_depth_fusion_remaps_history_across_small_crop_motion():
+    buffer = DepthFusionBuffer(window_size=3, min_roi_iou=0.5)
+    first_roi = RoiTransform((0, 0, 10, 10), 10)
+    second_roi = RoiTransform((1, 0, 11, 10), 10)
+    buffer.update(1, 1, 1.0, first_roi, np.full((10, 10), 400.0, dtype=np.float32))
+
+    out = buffer.update(1, 2, 2.0, second_roi, np.full((10, 10), 800.0, dtype=np.float32))
+
+    assert out.source_frame_count == 2
+    assert out.age_ms == 1.0
+    np.testing.assert_allclose(out.depth_roi_mm[:, :-1], 600.0)
+    np.testing.assert_allclose(out.depth_roi_mm[:, -1], 800.0)
 
 
 def test_depth_fusion_fails_closed_when_valid_ratio_is_too_low():

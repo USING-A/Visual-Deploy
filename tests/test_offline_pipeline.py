@@ -24,12 +24,12 @@ class MockSegmentor:
         return SegmentResult(mask.astype(np.float32), mask, int(mask.sum()), 1.0)
 
 
-def _frame() -> DeployFrame:
+def _frame(frame_id: int = 1, timestamp_ms: float = 1.0, depth_value_mm: float = 500.0) -> DeployFrame:
     return DeployFrame(
-        frame_id=1,
-        timestamp_ms=1.0,
+        frame_id=frame_id,
+        timestamp_ms=timestamp_ms,
         color_bgr=np.zeros((480, 640, 3), dtype=np.uint8),
-        depth_mm=np.full((480, 640), 500.0, dtype=np.float32),
+        depth_mm=np.full((480, 640), depth_value_mm, dtype=np.float32),
         intrinsics=CameraIntrinsics(fx=600.0, fy=600.0, ppx=320.0, ppy=240.0, depth_scale=0.001),
     )
 
@@ -111,6 +111,34 @@ def test_offline_pipeline_rejects_candidate_that_fails_safety_gate(tmp_path):
     assert record["candidates"][0]["selected"] is False
     assert record["candidates"][0]["safety"]["reason"] == "target_score_below_threshold"
     assert record["rejections"][0]["stage"] == "safety"
+
+
+def test_offline_pipeline_rejects_large_same_track_depth_jump(tmp_path):
+    pipeline = OfflinePipeline(
+        detector=MockDetector(0.9),
+        segmentor=MockSegmentor(),
+        config={
+            "depth_fusion": {"window_size": 1},
+            "safety": {
+                "enabled": True,
+                "max_depth_step_mm": 30.0,
+                "max_pixel_step_px": 40.0,
+                "max_history_age_ms": 1000.0,
+            },
+            "recording": {"output_root": str(tmp_path)},
+        },
+    )
+
+    first = pipeline.process_frame(_frame(frame_id=1, timestamp_ms=0.0, depth_value_mm=500.0))
+    second = pipeline.process_frame(_frame(frame_id=2, timestamp_ms=33.0, depth_value_mm=700.0))
+
+    run_dir = next(tmp_path.iterdir())
+    records = [json.loads(line) for line in (run_dir / "candidates.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert first.valid is True
+    assert second.valid is False
+    assert second.reason == "no_safe_grasp_candidate"
+    assert records[1]["candidates"][0]["safety"]["reason"] == "target_depth_jump"
+    assert records[1]["rejections"][0]["stage"] == "continuity"
 
 
 def test_offline_pipeline_keeps_gcnet_roi_size_fixed_at_256(tmp_path):

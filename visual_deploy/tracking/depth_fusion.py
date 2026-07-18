@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 import warnings
 
+import cv2
 import numpy as np
 
 from visual_deploy.geometry.roi import RoiTransform
@@ -33,6 +34,7 @@ class DepthFusionBuffer:
         min_depth_mm: float = 100.0,
         max_depth_mm: float = 5000.0,
         min_valid_ratio: float = 0.3,
+        min_roi_iou: float = 0.5,
     ) -> None:
         if not np.isfinite(window_size) or int(window_size) != window_size or window_size <= 0:
             raise ValueError("window_size must be a positive integer")
@@ -44,11 +46,14 @@ class DepthFusionBuffer:
             raise ValueError("min_depth_mm must be less than or equal to max_depth_mm")
         if not np.isfinite(min_valid_ratio) or min_valid_ratio < 0.0 or min_valid_ratio > 1.0:
             raise ValueError("min_valid_ratio must be between 0 and 1")
+        if not np.isfinite(min_roi_iou) or min_roi_iou < 0.0 or min_roi_iou > 1.0:
+            raise ValueError("min_roi_iou must be between 0 and 1")
 
         self.window_size = int(window_size)
         self.min_depth_mm = float(min_depth_mm)
         self.max_depth_mm = float(max_depth_mm)
         self.min_valid_ratio = float(min_valid_ratio)
+        self.min_roi_iou = float(min_roi_iou)
         self._history: dict[int, deque[_DepthEntry]] = {}
 
     def update(
@@ -73,10 +78,17 @@ class DepthFusionBuffer:
         history = self._history.setdefault(track_id, deque(maxlen=self.window_size))
         if history and timestamp < history[-1].timestamp_ms:
             raise ValueError("timestamp_ms must not go backwards for the same track")
-        if history and history[-1].roi_transform.crop_xyxy != roi_transform.crop_xyxy:
-            history.clear()
         if history and history[-1].depth_roi_mm.shape != depth.shape:
             raise ValueError("depth_roi_mm shape must match existing track history")
+
+        compatible = [
+            entry
+            for entry in history
+            if _crop_iou(entry.roi_transform.crop_xyxy, roi_transform.crop_xyxy) >= self.min_roi_iou
+        ]
+        if len(compatible) != len(history):
+            history.clear()
+            history.extend(compatible)
 
         history.append(
             _DepthEntry(
@@ -87,7 +99,13 @@ class DepthFusionBuffer:
             )
         )
 
-        stack = np.stack([self._valid_depth(entry.depth_roi_mm) for entry in history], axis=0)
+        stack = np.stack(
+            [
+                self._valid_depth(_remap_depth(entry, roi_transform))
+                for entry in history
+            ],
+            axis=0,
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
             fused = np.nanmedian(stack, axis=0).astype(np.float32)
@@ -121,3 +139,44 @@ class DepthFusionBuffer:
         valid &= depth_roi_mm >= self.min_depth_mm
         valid &= depth_roi_mm <= self.max_depth_mm
         return np.where(valid, depth_roi_mm, np.nan).astype(np.float32)
+
+
+def _crop_iou(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> float:
+    ax0, ay0, ax1, ay1 = first
+    bx0, by0, bx1, by1 = second
+    intersection_width = max(0, min(ax1, bx1) - max(ax0, bx0))
+    intersection_height = max(0, min(ay1, by1) - max(ay0, by0))
+    intersection = intersection_width * intersection_height
+    first_area = max(0, ax1 - ax0) * max(0, ay1 - ay0)
+    second_area = max(0, bx1 - bx0) * max(0, by1 - by0)
+    union = first_area + second_area - intersection
+    return float(intersection / union) if union > 0 else 0.0
+
+
+def _remap_depth(entry: _DepthEntry, target: RoiTransform) -> np.ndarray:
+    if entry.roi_transform.crop_xyxy == target.crop_xyxy:
+        return entry.depth_roi_mm
+
+    source = entry.roi_transform
+    size = target.roi_size
+    target_x0, target_y0, _, _ = target.crop_xyxy
+    source_x0, source_y0, _, _ = source.crop_xyxy
+    target_u, target_v = np.meshgrid(
+        np.arange(size, dtype=np.float32),
+        np.arange(size, dtype=np.float32),
+    )
+    image_x = target_x0 + (target_u + 0.5) * (target.crop_width / float(size))
+    image_y = target_y0 + (target_v + 0.5) * (target.crop_height / float(size))
+    source_u = (image_x - source_x0) * (size / float(source.crop_width)) - 0.5
+    source_v = (image_y - source_y0) * (size / float(source.crop_height)) - 0.5
+    return cv2.remap(
+        entry.depth_roi_mm,
+        source_u,
+        source_v,
+        interpolation=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=float("nan"),
+    ).astype(np.float32, copy=False)

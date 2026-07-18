@@ -13,6 +13,7 @@ from visual_deploy.geometry.pose import approach_from_normal
 from visual_deploy.geometry.roi import RoiTransform
 from visual_deploy.ranking.target_ranker import CandidateScores, TargetRanker
 from visual_deploy.recording.recorder import RunRecorder
+from visual_deploy.safety.target_continuity import TargetContinuityValidator
 from visual_deploy.safety.target_validator import TargetSafetyValidator, TargetValidation
 from visual_deploy.tracking.depth_fusion import DepthFusionBuffer, FusedTrackDepth
 from visual_deploy.tracking.tracker import ConfidenceGate, DepthRoiStats, SimpleIoUTracker
@@ -37,9 +38,10 @@ class OfflinePipeline:
             max_lost=int(tracking_cfg.get("max_lost", 30)),
             min_hits=self.min_hits,
         )
-        self.depth_fusion = DepthFusionBuffer(**_pick(self.config.get("depth_fusion", {}), "window_size", "min_depth_mm", "max_depth_mm", "min_valid_ratio"))
+        self.depth_fusion = DepthFusionBuffer(**_pick(self.config.get("depth_fusion", {}), "window_size", "min_depth_mm", "max_depth_mm", "min_valid_ratio", "min_roi_iou"))
         self.ranker = TargetRanker(weights=self.config.get("ranking", {}).get("weights"))
         self.safety_validator = TargetSafetyValidator.from_config(self.config.get("safety"))
+        self.continuity_validator = TargetContinuityValidator.from_config(self.config.get("safety"))
         self.last_debug: DebugSnapshot | None = None
 
         recording_cfg = self.config.get("recording", {})
@@ -73,18 +75,33 @@ class OfflinePipeline:
         ranked = self.ranker.rank([candidate.scores for candidate in candidates])
         candidates_by_track = {candidate.track.track_id: candidate for candidate in candidates}
         selected: _PipelineCandidate | None = None
+        selected_coordinates: tuple[float, float, float] | None = None
         for rank, score in enumerate(ranked, 1):
             candidate = candidates_by_track[score.track_id]
             candidate.rank = rank
             candidate.validation = self.safety_validator.validate(candidate.scores, candidate.patch)
+            coordinates = _candidate_image_coordinates(candidate, frame)
+            if candidate.validation.valid:
+                candidate.validation = self.continuity_validator.validate(
+                    candidate.track.track_id,
+                    frame.timestamp_ms,
+                    *coordinates,
+                )
             if candidate.validation.valid and selected is None:
                 selected = candidate
+                selected_coordinates = coordinates
                 candidate.selected = True
             elif not candidate.validation.valid:
+                stage = "continuity" if candidate.validation.reason in {
+                    "target_timestamp_regression",
+                    "target_depth_jump",
+                    "target_pixel_jump",
+                    "non_finite_target",
+                } else "safety"
                 rejections.append(
                     _rejection_record(
                         candidate.track,
-                        "safety",
+                        stage,
                         str(candidate.validation.reason),
                         metric=candidate.validation.metric,
                         value=candidate.validation.value,
@@ -110,8 +127,9 @@ class OfflinePipeline:
 
         best = selected
         best_score = selected.scores
-        u_img, v_img = best.roi_transform.roi_to_image(best.patch.u_px, best.patch.v_px)
-        z_mm = best.patch.z_m / float(frame.intrinsics.depth_scale)
+        if selected_coordinates is None:
+            raise RuntimeError("selected candidate coordinates are missing")
+        u_img, v_img, z_mm = selected_coordinates
         xyz = backproject_pixel(u_img, v_img, z_mm, frame.intrinsics)
         approach = approach_from_normal(best.patch.normal_xyz)
         target = GraspTarget(
@@ -126,6 +144,7 @@ class OfflinePipeline:
             approach_axis=tuple(float(value) for value in approach),
             target_score=float(best_score.target_score),
         )
+        self.continuity_validator.accept(best.track.track_id, frame.timestamp_ms, u_img, v_img, z_mm)
         self.recorder.write_target(asdict(target))
         self.last_debug = _debug_snapshot(frame, gated, target, candidates)
         return target
@@ -310,6 +329,12 @@ def _detection_record(detection: Detection) -> dict[str, Any]:
         "track_id": detection.track_id,
         "depth_stats": asdict(detection.depth_stats),
     }
+
+
+def _candidate_image_coordinates(candidate: _PipelineCandidate, frame: DeployFrame) -> tuple[float, float, float]:
+    u_img, v_img = candidate.roi_transform.roi_to_image(candidate.patch.u_px, candidate.patch.v_px)
+    z_mm = candidate.patch.z_m / float(frame.intrinsics.depth_scale)
+    return float(u_img), float(v_img), float(z_mm)
 
 
 def _rejection_record(
