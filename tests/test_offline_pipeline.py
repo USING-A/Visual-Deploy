@@ -71,6 +71,11 @@ def test_offline_pipeline_returns_invalid_when_no_candidate(tmp_path):
 
     assert target.valid is False
     assert target.reason == "no_valid_grasp_candidate"
+    run_dir = next(tmp_path.iterdir())
+    timing = json.loads((run_dir / "timings.jsonl").read_text(encoding="utf-8").strip())
+    assert timing["depth_fusion_ms"] == 0.0
+    assert timing["segmentation_ms"] == 0.0
+    assert timing["grasp_ms"] == 0.0
 
 
 def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path):
@@ -90,6 +95,12 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
     assert candidate["rank"] == 1
     assert candidate["selected"] is True
     assert candidate["safety"]["valid"] is True
+    timing = json.loads((run_dir / "timings.jsonl").read_text(encoding="utf-8").strip())
+    assert timing["valid_target"] is True
+    assert timing["detection_ms"] >= 0.0
+    assert timing["segmentation_ms"] >= 0.0
+    assert timing["grasp_ms"] >= 0.0
+    assert timing["total_ms"] >= timing["detection_ms"]
 
 
 def test_offline_pipeline_rejects_candidate_that_fails_safety_gate(tmp_path):
@@ -111,6 +122,36 @@ def test_offline_pipeline_rejects_candidate_that_fails_safety_gate(tmp_path):
     assert record["candidates"][0]["selected"] is False
     assert record["candidates"][0]["safety"]["reason"] == "target_score_below_threshold"
     assert record["rejections"][0]["stage"] == "safety"
+
+
+def test_offline_pipeline_saves_event_artifacts_for_safety_rejection(tmp_path):
+    pipeline = OfflinePipeline(
+        detector=MockDetector(0.9),
+        segmentor=MockSegmentor(),
+        config={
+            "safety": {"enabled": True, "min_target_score": 1.0},
+            "recording": {
+                "output_root": str(tmp_path),
+                "save_event_artifacts": True,
+                "event_stages": ["safety"],
+                "save_frames": True,
+                "save_depth": True,
+                "save_masks": True,
+                "save_overlays": True,
+            },
+        },
+    )
+
+    target = pipeline.process_frame(_frame())
+
+    run_dir = next(tmp_path.iterdir())
+    event = json.loads((run_dir / "events.jsonl").read_text(encoding="utf-8").strip())
+    assert target.valid is False
+    assert event["rejections"][0]["stage"] == "safety"
+    assert (run_dir / event["artifacts"]["frame"]).is_file()
+    assert (run_dir / event["artifacts"]["depth"]).is_file()
+    assert (run_dir / event["artifacts"]["masks"][0]).is_file()
+    assert (run_dir / event["artifacts"]["overlay"]).is_file()
 
 
 def test_offline_pipeline_rejects_large_same_track_depth_jump(tmp_path):

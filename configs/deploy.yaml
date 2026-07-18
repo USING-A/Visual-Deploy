@@ -69,7 +69,11 @@ safety:
 
 recording:
   output_root: runs
-  save_frames: false
+  save_frames: true
+  save_depth: true
   save_depth_preview: true
   save_masks: true
   save_overlays: true
+  save_event_artifacts: true
+  event_stages: [safety, continuity]
+  event_cooldown_frames: 15

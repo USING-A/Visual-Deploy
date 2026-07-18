@@ -101,6 +101,9 @@ Important contracts:
 - GCNet ROI input is fixed at `256 x 256`
 - Color ROI resize uses bilinear interpolation
 - Depth ROI resize uses nearest-neighbor interpolation
+- Depth history is remapped into the current ROI while crop IoU remains above
+  `depth_fusion.min_roi_iou`
+- `safety` gates static candidate quality and same-track pixel/depth continuity
 
 Depth is stored in millimeters inside the runtime. Camera coordinates use:
 
@@ -108,6 +111,11 @@ Depth is stored in millimeters inside the runtime. Camera coordinates use:
 depth_m = depth_mm * CameraIntrinsics.depth_scale
 CameraIntrinsics.depth_scale = 0.001
 ```
+
+The default safety values are screening thresholds derived from the 20260717
+runtime logs. Recalibrate them against labeled successful and failed grasp
+attempts before changing the suction hardware, camera geometry, or operating
+distance.
 
 ## 6. Offline Verification
 
@@ -190,6 +198,20 @@ approach_axis    Suction approach axis, equal to -normal_xyz
 target_score     Ranking score
 ```
 
+Each run also writes:
+
+```text
+detections.jsonl   gated detections and depth statistics
+candidates.jsonl   ranked candidates and rejection evidence
+targets.jsonl      selected valid or invalid camera-frame target
+timings.jsonl      per-stage and total latency
+events.jsonl       safety/continuity events and artifact paths
+frames/ depth/ masks/ overlays/
+```
+
+Routine frames are not recorded. Configured safety and continuity rejections
+trigger RGB, raw depth, mask, and overlay capture with a frame cooldown.
+
 The repository does not include robot extrinsics, IK, collision checks, or
 workspace checks.
 
@@ -199,10 +221,10 @@ workspace checks.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Validated result:
+Validation command:
 
 ```text
-133 passed, 1 skipped
+python -m pytest -q
 ```
 
 Hardware and real-scene realtime tests are separate from the unit test suite.

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from time import perf_counter
 from typing import Any
 
 import cv2
 import numpy as np
 
+from visual_deploy.debug.overlay import render_debug_overlay
 from visual_deploy.debug.snapshot import DebugSnapshot
 from visual_deploy.geometry.backproject import backproject_pixel
 from visual_deploy.geometry.grasp_patch import GraspPatch, select_grasp_patch
@@ -18,6 +20,18 @@ from visual_deploy.safety.target_validator import TargetSafetyValidator, TargetV
 from visual_deploy.tracking.depth_fusion import DepthFusionBuffer, FusedTrackDepth
 from visual_deploy.tracking.tracker import ConfidenceGate, DepthRoiStats, SimpleIoUTracker
 from visual_deploy.types import DeployFrame, Detection, GraspTarget, Track
+
+
+_TIMING_FIELDS = (
+    "detection_ms",
+    "tracking_ms",
+    "depth_fusion_ms",
+    "segmentation_ms",
+    "grasp_ms",
+    "ranking_safety_ms",
+    "recording_ms",
+    "diagnostic_ms",
+)
 
 
 class OfflinePipeline:
@@ -46,12 +60,25 @@ class OfflinePipeline:
 
         recording_cfg = self.config.get("recording", {})
         self.recorder = RunRecorder(recording_cfg.get("output_root", "runs"), config=self.config)
+        self.save_event_artifacts = bool(recording_cfg.get("save_event_artifacts", False))
+        self.event_stages = {str(value) for value in recording_cfg.get("event_stages", ("safety", "continuity"))}
+        self.event_cooldown_frames = int(recording_cfg.get("event_cooldown_frames", 0))
+        if self.event_cooldown_frames < 0:
+            raise ValueError("recording.event_cooldown_frames must be non-negative")
+        self._last_event_frame_id: int | None = None
 
     def process_frame(self, frame: DeployFrame) -> GraspTarget:
+        frame_started = perf_counter()
+        timings = {name: 0.0 for name in _TIMING_FIELDS}
         _validate_frame(frame)
+        stage_started = perf_counter()
         detections = self.detector.infer(frame.color_bgr)
+        timings["detection_ms"] += _elapsed_ms(stage_started)
+        stage_started = perf_counter()
         gated = self.gate.apply(_attach_depth_stats(detections, frame.depth_mm, self.depth_stats))
         tracks = self.tracker.update(gated)
+        timings["tracking_ms"] += _elapsed_ms(stage_started)
+        stage_started = perf_counter()
         self.recorder.write_detection(
             {
                 "frame_id": frame.frame_id,
@@ -66,12 +93,13 @@ class OfflinePipeline:
             if track.state != "confirmed":
                 rejections.append(_rejection_record(track, "tracking", "track_not_confirmed"))
                 continue
-            candidate, rejection = self._process_track(frame, track)
+            candidate, rejection = self._process_track(frame, track, timings)
             if candidate is not None:
                 candidates.append(candidate)
             if rejection is not None:
                 rejections.append(rejection)
 
+        stage_started = perf_counter()
         ranked = self.ranker.rank([candidate.scores for candidate in candidates])
         candidates_by_track = {candidate.track.track_id: candidate for candidate in candidates}
         selected: _PipelineCandidate | None = None
@@ -108,7 +136,9 @@ class OfflinePipeline:
                         threshold=candidate.validation.threshold,
                     )
                 )
+        timings["ranking_safety_ms"] += _elapsed_ms(stage_started)
 
+        stage_started = perf_counter()
         self.recorder.write_candidate(
             {
                 "frame_id": frame.frame_id,
@@ -117,12 +147,17 @@ class OfflinePipeline:
                 "rejections": rejections,
             }
         )
+        timings["recording_ms"] += _elapsed_ms(stage_started)
+        timings["recording_ms"] += _elapsed_ms(stage_started)
 
         if selected is None:
             reason = "no_safe_grasp_candidate" if candidates else "no_valid_grasp_candidate"
             target = GraspTarget(valid=False, frame_id=frame.frame_id, reason=reason)
+            stage_started = perf_counter()
             self.recorder.write_target(asdict(target))
+            timings["recording_ms"] += _elapsed_ms(stage_started)
             self.last_debug = _debug_snapshot(frame, gated, target, candidates)
+            self._finalize_frame(frame, gated, candidates, rejections, target, timings, frame_started)
             return target
 
         best = selected
@@ -145,11 +180,19 @@ class OfflinePipeline:
             target_score=float(best_score.target_score),
         )
         self.continuity_validator.accept(best.track.track_id, frame.timestamp_ms, u_img, v_img, z_mm)
+        stage_started = perf_counter()
         self.recorder.write_target(asdict(target))
+        timings["recording_ms"] += _elapsed_ms(stage_started)
         self.last_debug = _debug_snapshot(frame, gated, target, candidates)
+        self._finalize_frame(frame, gated, candidates, rejections, target, timings, frame_started)
         return target
 
-    def _process_track(self, frame: DeployFrame, track: Track) -> tuple[_PipelineCandidate | None, dict[str, Any] | None]:
+    def _process_track(
+        self,
+        frame: DeployFrame,
+        track: Track,
+        timings: dict[str, float],
+    ) -> tuple[_PipelineCandidate | None, dict[str, Any] | None]:
         height, width = frame.color_bgr.shape[:2]
         roi_size = 256
         roi = RoiTransform.from_bbox(
@@ -160,11 +203,15 @@ class OfflinePipeline:
             roi_size,
         )
         color_roi, depth_roi = _crop_resize(frame.color_bgr, frame.depth_mm, roi)
+        stage_started = perf_counter()
         fused = self.depth_fusion.update(track.track_id, frame.frame_id, frame.timestamp_ms, roi, depth_roi)
+        timings["depth_fusion_ms"] += _elapsed_ms(stage_started)
         if fused.valid_ratio <= 0.0:
             return None, _rejection_record(track, "depth_fusion", "insufficient_depth_fusion")
 
+        stage_started = perf_counter()
         segment = self.segmentor.infer(color_roi, fused.depth_roi_mm)
+        timings["segmentation_ms"] += _elapsed_ms(stage_started)
         image_mask = _mask_to_image(segment.mask_256, roi, height, width)
         if segment.mask_area <= 0:
             return None, _rejection_record(
@@ -175,6 +222,7 @@ class OfflinePipeline:
                 value=float(segment.mask_area),
                 threshold=1.0,
             )
+        stage_started = perf_counter()
         patch = select_grasp_patch(
             segment.mask_256,
             fused.depth_roi_mm,
@@ -191,6 +239,7 @@ class OfflinePipeline:
                 "min_score",
             ),
         )
+        timings["grasp_ms"] += _elapsed_ms(stage_started)
         if patch is None:
             return None, _rejection_record(track, "grasp", "no_valid_grasp_patch")
 
@@ -210,6 +259,66 @@ class OfflinePipeline:
             scores=scores,
             image_mask=image_mask,
         ), None
+
+    def _finalize_frame(
+        self,
+        frame: DeployFrame,
+        detections: list[Detection],
+        candidates: list[_PipelineCandidate],
+        rejections: list[dict[str, Any]],
+        target: GraspTarget,
+        timings: dict[str, float],
+        frame_started: float,
+    ) -> None:
+        diagnostic_started = perf_counter()
+        triggering = [record for record in rejections if record["stage"] in self.event_stages]
+        if self._should_save_event(frame.frame_id, triggering):
+            recording_cfg = self.config.get("recording", {})
+            overlay = None
+            if bool(recording_cfg.get("save_overlays", False)):
+                overlay = render_debug_overlay(
+                    frame.color_bgr,
+                    detections=detections,
+                    target=target,
+                    masks=[candidate.image_mask for candidate in candidates],
+                )
+            artifacts = self.recorder.save_event_artifacts(
+                frame.frame_id,
+                color_bgr=frame.color_bgr if bool(recording_cfg.get("save_frames", False)) else None,
+                depth_mm=frame.depth_mm if bool(recording_cfg.get("save_depth", False)) else None,
+                masks=[(candidate.track.track_id, candidate.image_mask) for candidate in candidates]
+                if bool(recording_cfg.get("save_masks", False))
+                else None,
+                overlay_bgr=overlay,
+            )
+            self.recorder.write_event(
+                {
+                    "frame_id": frame.frame_id,
+                    "timestamp_ms": frame.timestamp_ms,
+                    "target": asdict(target),
+                    "rejections": triggering,
+                    "artifacts": artifacts,
+                }
+            )
+            self._last_event_frame_id = frame.frame_id
+        timings["diagnostic_ms"] += _elapsed_ms(diagnostic_started)
+        timings["total_ms"] = _elapsed_ms(frame_started)
+        self.recorder.write_timing(
+            {
+                "frame_id": frame.frame_id,
+                "timestamp_ms": frame.timestamp_ms,
+                "valid_target": target.valid,
+                "target_reason": target.reason,
+                **{name: float(value) for name, value in timings.items()},
+            }
+        )
+
+    def _should_save_event(self, frame_id: int, triggering: list[dict[str, Any]]) -> bool:
+        if not self.save_event_artifacts or not triggering:
+            return False
+        if self._last_event_frame_id is None:
+            return True
+        return int(frame_id) - self._last_event_frame_id > self.event_cooldown_frames
 
 
 class _PipelineCandidate:
@@ -355,3 +464,7 @@ def _rejection_record(
         "value": value,
         "threshold": threshold,
     }
+
+
+def _elapsed_ms(started: float) -> float:
+    return float((perf_counter() - started) * 1000.0)

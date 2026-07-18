@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import pytest
 
 from visual_deploy.recording.recorder import RunRecorder
@@ -25,6 +26,32 @@ def test_recorder_creates_artifact_directories(tmp_path):
     assert (rec.run_dir / "frames").is_dir()
     assert (rec.run_dir / "masks").is_dir()
     assert (rec.run_dir / "overlays").is_dir()
+    assert (rec.run_dir / "depth").is_dir()
+
+
+def test_recorder_writes_timing_and_event_artifacts(tmp_path):
+    rec = RunRecorder(tmp_path, run_name="test_run")
+    color = np.zeros((12, 16, 3), dtype=np.uint8)
+    depth = np.full((12, 16), 250.0, dtype=np.float32)
+    mask = np.zeros((12, 16), dtype=bool)
+    mask[3:9, 4:12] = True
+    artifacts = rec.save_event_artifacts(
+        7,
+        color_bgr=color,
+        depth_mm=depth,
+        masks=[(3, mask)],
+        overlay_bgr=color,
+    )
+    rec.write_timing({"frame_id": 7, "total_ms": 10.0})
+    rec.write_event({"frame_id": 7, "artifacts": artifacts})
+
+    run_dir = tmp_path / "test_run"
+    assert (run_dir / artifacts["frame"]).is_file()
+    assert (run_dir / artifacts["depth"]).is_file()
+    assert (run_dir / artifacts["masks"][0]).is_file()
+    assert (run_dir / artifacts["overlay"]).is_file()
+    assert json.loads((run_dir / "timings.jsonl").read_text(encoding="utf-8"))["total_ms"] == 10.0
+    assert json.loads((run_dir / "events.jsonl").read_text(encoding="utf-8"))["frame_id"] == 7
 
 
 def test_recorder_writes_error_records(tmp_path):

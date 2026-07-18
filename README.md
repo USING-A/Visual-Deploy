@@ -13,13 +13,16 @@ model training/export and are not runtime dependencies.
 
 - RealSense D435i RGB-D source with depth aligned to color.
 - YOLOv10 apple detector loaded from exported/local `.pt` weights.
-- Confidence gating, IoU tracking, and per-track ROI depth fusion.
+- Confidence gating, IoU tracking, and ROI-remapped per-track depth fusion.
 - Reparameterized RGBD-GCNet TorchScript segmentation.
 - ROI-safe geometry mapping from detector box to 256x256 GCNet input and back
   to full-frame pixels.
 - Suction grasp patch selection and camera-frame `(u, v, z_mm, xyz, pose)`
   output.
-- JSONL recording of detections, candidates, targets, and errors.
+- Configurable target-score, confidence, mask-quality, normal-angle, and
+  temporal-continuity safety gates.
+- JSONL recording of detections, ranked candidates, rejection reasons,
+  targets, stage timings, diagnostic events, and errors.
 
 ## Pipeline
 
@@ -31,6 +34,7 @@ RealSense D435i RGB-D frame
   -> exported RGBD-GCNet segmentation
   -> suction grasp patch selection
   -> target ranking
+  -> static and temporal safety validation
   -> GraspTarget
 ```
 
@@ -202,11 +206,22 @@ run_config.yaml
 detections.jsonl
 candidates.jsonl
 targets.jsonl
+timings.jsonl
+events.jsonl
 errors.jsonl
 frames/
+depth/
 masks/
 overlays/
 ```
+
+`candidates.jsonl` records computed target scores, rank, selection state, and
+the first available rejection evidence. `timings.jsonl` separates detection,
+tracking, depth fusion, segmentation, grasp search, ranking/safety, recording,
+diagnostics, and total latency.
+
+RGB, raw depth, masks, and overlays are saved only for configured safety or
+continuity events. `recording.event_cooldown_frames` bounds artifact volume.
 
 For a valid target:
 
@@ -225,14 +240,11 @@ target_score     Weighted ranking score
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current validated result:
+Current validation command:
 
 ```text
-133 passed, 1 skipped
+python -m pytest -q
 ```
-
-The skipped test is the optional YOLO weight smoke when weights or optional
-runtime dependencies are unavailable.
 
 ## Deployment Copy Checklist
 
