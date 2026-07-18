@@ -13,6 +13,7 @@ from visual_deploy.geometry.pose import approach_from_normal
 from visual_deploy.geometry.roi import RoiTransform
 from visual_deploy.ranking.target_ranker import CandidateScores, TargetRanker
 from visual_deploy.recording.recorder import RunRecorder
+from visual_deploy.safety.target_validator import TargetSafetyValidator, TargetValidation
 from visual_deploy.tracking.depth_fusion import DepthFusionBuffer, FusedTrackDepth
 from visual_deploy.tracking.tracker import ConfidenceGate, DepthRoiStats, SimpleIoUTracker
 from visual_deploy.types import DeployFrame, Detection, GraspTarget, Track
@@ -38,6 +39,7 @@ class OfflinePipeline:
         )
         self.depth_fusion = DepthFusionBuffer(**_pick(self.config.get("depth_fusion", {}), "window_size", "min_depth_mm", "max_depth_mm", "min_valid_ratio"))
         self.ranker = TargetRanker(weights=self.config.get("ranking", {}).get("weights"))
+        self.safety_validator = TargetSafetyValidator.from_config(self.config.get("safety"))
         self.last_debug: DebugSnapshot | None = None
 
         recording_cfg = self.config.get("recording", {})
@@ -57,30 +59,57 @@ class OfflinePipeline:
         )
 
         candidates: list[_PipelineCandidate] = []
+        rejections: list[dict[str, Any]] = []
         for track in tracks:
             if track.state != "confirmed":
+                rejections.append(_rejection_record(track, "tracking", "track_not_confirmed"))
                 continue
-            candidate = self._process_track(frame, track)
+            candidate, rejection = self._process_track(frame, track)
             if candidate is not None:
                 candidates.append(candidate)
+            if rejection is not None:
+                rejections.append(rejection)
+
+        ranked = self.ranker.rank([candidate.scores for candidate in candidates])
+        candidates_by_track = {candidate.track.track_id: candidate for candidate in candidates}
+        selected: _PipelineCandidate | None = None
+        for rank, score in enumerate(ranked, 1):
+            candidate = candidates_by_track[score.track_id]
+            candidate.rank = rank
+            candidate.validation = self.safety_validator.validate(candidate.scores, candidate.patch)
+            if candidate.validation.valid and selected is None:
+                selected = candidate
+                candidate.selected = True
+            elif not candidate.validation.valid:
+                rejections.append(
+                    _rejection_record(
+                        candidate.track,
+                        "safety",
+                        str(candidate.validation.reason),
+                        metric=candidate.validation.metric,
+                        value=candidate.validation.value,
+                        threshold=candidate.validation.threshold,
+                    )
+                )
 
         self.recorder.write_candidate(
             {
                 "frame_id": frame.frame_id,
                 "timestamp_ms": frame.timestamp_ms,
                 "candidates": [candidate.to_record() for candidate in candidates],
+                "rejections": rejections,
             }
         )
 
-        ranked = self.ranker.rank([candidate.scores for candidate in candidates])
-        if not ranked:
-            target = GraspTarget(valid=False, frame_id=frame.frame_id, reason="no_valid_grasp_candidate")
+        if selected is None:
+            reason = "no_safe_grasp_candidate" if candidates else "no_valid_grasp_candidate"
+            target = GraspTarget(valid=False, frame_id=frame.frame_id, reason=reason)
             self.recorder.write_target(asdict(target))
             self.last_debug = _debug_snapshot(frame, gated, target, candidates)
             return target
 
-        best_score = ranked[0]
-        best = next(candidate for candidate in candidates if candidate.track.track_id == best_score.track_id)
+        best = selected
+        best_score = selected.scores
         u_img, v_img = best.roi_transform.roi_to_image(best.patch.u_px, best.patch.v_px)
         z_mm = best.patch.z_m / float(frame.intrinsics.depth_scale)
         xyz = backproject_pixel(u_img, v_img, z_mm, frame.intrinsics)
@@ -101,7 +130,7 @@ class OfflinePipeline:
         self.last_debug = _debug_snapshot(frame, gated, target, candidates)
         return target
 
-    def _process_track(self, frame: DeployFrame, track: Track) -> _PipelineCandidate | None:
+    def _process_track(self, frame: DeployFrame, track: Track) -> tuple[_PipelineCandidate | None, dict[str, Any] | None]:
         height, width = frame.color_bgr.shape[:2]
         roi_size = 256
         roi = RoiTransform.from_bbox(
@@ -114,10 +143,19 @@ class OfflinePipeline:
         color_roi, depth_roi = _crop_resize(frame.color_bgr, frame.depth_mm, roi)
         fused = self.depth_fusion.update(track.track_id, frame.frame_id, frame.timestamp_ms, roi, depth_roi)
         if fused.valid_ratio <= 0.0:
-            return None
+            return None, _rejection_record(track, "depth_fusion", "insufficient_depth_fusion")
 
         segment = self.segmentor.infer(color_roi, fused.depth_roi_mm)
         image_mask = _mask_to_image(segment.mask_256, roi, height, width)
+        if segment.mask_area <= 0:
+            return None, _rejection_record(
+                track,
+                "segmentation",
+                "empty_mask",
+                metric="mask_area",
+                value=float(segment.mask_area),
+                threshold=1.0,
+            )
         patch = select_grasp_patch(
             segment.mask_256,
             fused.depth_roi_mm,
@@ -135,7 +173,7 @@ class OfflinePipeline:
             ),
         )
         if patch is None:
-            return None
+            return None, _rejection_record(track, "grasp", "no_valid_grasp_patch")
 
         scores = CandidateScores(
             track_id=track.track_id,
@@ -152,7 +190,7 @@ class OfflinePipeline:
             patch=patch,
             scores=scores,
             image_mask=image_mask,
-        )
+        ), None
 
 
 class _PipelineCandidate:
@@ -171,12 +209,17 @@ class _PipelineCandidate:
         self.patch = patch
         self.scores = scores
         self.image_mask = image_mask
+        self.rank: int | None = None
+        self.selected = False
+        self.validation = TargetValidation(valid=True)
 
     def to_record(self) -> dict[str, Any]:
         return {
             "track_id": self.track.track_id,
             "bbox_xyxy": list(self.track.bbox_xyxy),
             "roi_crop_xyxy": list(self.roi_transform.crop_xyxy),
+            "rank": self.rank,
+            "selected": self.selected,
             "grasp": {
                 "u_roi_px": self.patch.u_px,
                 "v_roi_px": self.patch.v_px,
@@ -194,6 +237,7 @@ class _PipelineCandidate:
                 "age_ms": self.depth.age_ms,
             },
             "scores": asdict(self.scores),
+            "safety": asdict(self.validation),
         }
 
 
@@ -265,4 +309,24 @@ def _detection_record(detection: Detection) -> dict[str, Any]:
         "label": detection.label,
         "track_id": detection.track_id,
         "depth_stats": asdict(detection.depth_stats),
+    }
+
+
+def _rejection_record(
+    track: Track,
+    stage: str,
+    reason: str,
+    *,
+    metric: str | None = None,
+    value: float | None = None,
+    threshold: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "track_id": track.track_id,
+        "bbox_xyxy": list(track.bbox_xyxy),
+        "stage": stage,
+        "reason": reason,
+        "metric": metric,
+        "value": value,
+        "threshold": threshold,
     }

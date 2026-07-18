@@ -56,6 +56,13 @@ ranking:
     track_stability: 0.10
     mask_quality_score: 0.10
 
+safety:
+  enabled: true
+  min_target_score: 0.80
+  min_track_confidence: 0.20
+  min_mask_quality: 0.60
+  max_normal_tilt_deg: 35.0
+
 recording:
   output_root: runs
   save_frames: false

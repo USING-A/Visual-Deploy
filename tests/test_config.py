@@ -18,6 +18,7 @@ def test_load_default_config_has_runtime_sections():
         "depth_fusion",
         "grasp",
         "ranking",
+        "safety",
         "recording",
     }
     assert cfg["roi"]["size"] == 256
@@ -25,6 +26,7 @@ def test_load_default_config_has_runtime_sections():
     assert cfg["camera"]["align_to_color"] is True
     assert cfg["detection"]["model_type"] == "yolov10"
     assert cfg["segmentation"]["depth_input_unit"] == "mm"
+    assert cfg["safety"]["enabled"] is True
 
 
 def test_load_config_rejects_non_mapping_yaml(tmp_path):

@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -69,6 +71,46 @@ def test_offline_pipeline_returns_invalid_when_no_candidate(tmp_path):
 
     assert target.valid is False
     assert target.reason == "no_valid_grasp_candidate"
+
+
+def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path):
+    pipeline = OfflinePipeline(
+        detector=MockDetector(0.9),
+        segmentor=MockSegmentor(),
+        config={"recording": {"output_root": str(tmp_path)}},
+    )
+
+    target = pipeline.process_frame(_frame())
+
+    run_dir = next(tmp_path.iterdir())
+    record = json.loads((run_dir / "candidates.jsonl").read_text(encoding="utf-8").strip())
+    candidate = record["candidates"][0]
+    assert target.valid is True
+    assert candidate["scores"]["target_score"] == pytest.approx(target.target_score)
+    assert candidate["rank"] == 1
+    assert candidate["selected"] is True
+    assert candidate["safety"]["valid"] is True
+
+
+def test_offline_pipeline_rejects_candidate_that_fails_safety_gate(tmp_path):
+    pipeline = OfflinePipeline(
+        detector=MockDetector(0.9),
+        segmentor=MockSegmentor(),
+        config={
+            "safety": {"enabled": True, "min_target_score": 1.0},
+            "recording": {"output_root": str(tmp_path)},
+        },
+    )
+
+    target = pipeline.process_frame(_frame())
+
+    run_dir = next(tmp_path.iterdir())
+    record = json.loads((run_dir / "candidates.jsonl").read_text(encoding="utf-8").strip())
+    assert target.valid is False
+    assert target.reason == "no_safe_grasp_candidate"
+    assert record["candidates"][0]["selected"] is False
+    assert record["candidates"][0]["safety"]["reason"] == "target_score_below_threshold"
+    assert record["rejections"][0]["stage"] == "safety"
 
 
 def test_offline_pipeline_keeps_gcnet_roi_size_fixed_at_256(tmp_path):
