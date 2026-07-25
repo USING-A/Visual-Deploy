@@ -1,0 +1,6 @@
+# Model export is a development-machine concern, not a Jetson runtime dependency.
+torch==2.7.0
+onnx==1.17.0
+onnxruntime==1.19.2
+onnxslim==0.1.72
+./vendor/ultralytics-8.1.34-py3-none-any.whl

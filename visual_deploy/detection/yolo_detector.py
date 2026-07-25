@@ -1,24 +1,13 @@
 from __future__ import annotations
 
 from os import PathLike
-from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
+from visual_deploy.inference.session import InferenceSession, create_inference_session
 from visual_deploy.types import Detection
-
-try:
-    from ultralytics import YOLO
-    try:
-        from ultralytics import YOLOv10
-    except Exception:
-        YOLOv10 = None
-    _YOLO_IMPORT_ERROR = None
-except Exception as exc:
-    YOLO = None
-    YOLOv10 = None
-    _YOLO_IMPORT_ERROR = exc
 
 
 class MockDetector:
@@ -29,66 +18,71 @@ class MockDetector:
         image = np.asarray(color_bgr)
         _validate_color_bgr(image)
         height, width = image.shape[:2]
-        return [
-            Detection(
-                bbox_xyxy=(width * 0.25, height * 0.25, width * 0.75, height * 0.75),
-                class_id=0,
-                confidence=self.confidence,
-                label="mock",
-            )
-        ]
+        return [Detection((width * 0.25, height * 0.25, width * 0.75, height * 0.75), 0, self.confidence, "mock")]
 
 
-class UltralyticsYoloDetector:
+class YoloV10Detector:
+    """Standard YOLOv10 end-to-end ONNX/TensorRT detector adapter."""
+
     def __init__(
         self,
         weights_path: str | PathLike[str],
-        conf_threshold: float = 0.25,
-        device: str | None = None,
-        model_type: str = "auto",
+        conf_threshold: float = 0.5,
+        device: str = "cpu",
+        backend: str = "auto",
+        image_size: int = 640,
+        class_names: dict[int, str] | None = None,
+        *,
+        session: InferenceSession | None = None,
     ) -> None:
-        weights = Path(weights_path)
-        if not weights.exists():
-            raise FileNotFoundError(f"YOLO weights not found: {weights}")
-        conf_threshold = _validate_conf_threshold(conf_threshold)
-        self.model_type = _validate_model_type(model_type)
-        model_class = _select_model_class(self.model_type)
-
-        self.weights_path = weights
-        self.conf_threshold = conf_threshold
-        self.device = device
-        self.model = model_class(str(weights))
+        self.conf_threshold = _validate_conf_threshold(conf_threshold)
+        self.image_size = int(image_size)
+        if self.image_size <= 0:
+            raise ValueError("image_size must be positive")
+        self.class_names = class_names or {0: "apple"}
+        self.session = session or create_inference_session(weights_path, device=device, backend=backend)
+        if len(self.session.input_names) != 1:
+            raise ValueError(f"YOLOv10 model must have one input, got {self.session.input_names}")
 
     def infer(self, color_bgr: np.ndarray) -> list[Detection]:
         image = np.asarray(color_bgr)
         _validate_color_bgr(image)
-        results = self.model.predict(
-            source=color_bgr,
-            conf=self.conf_threshold,
-            verbose=False,
-            device=self.device,
-        )
-        if not results:
-            return []
-
-        result = results[0]
-        boxes = getattr(result, "boxes", None)
-        if boxes is None:
-            return []
-
-        names = getattr(result, "names", {}) or {}
+        tensor, scale, pad_x, pad_y = _preprocess(image, self.image_size)
+        outputs = self.session.run({self.session.input_names[0]: tensor})
+        raw = np.asarray(outputs[self.session.output_names[0]])
+        if raw.ndim != 3 or raw.shape[0] != 1 or raw.shape[2] != 6:
+            raise ValueError(f"YOLOv10 output must have shape (1, N, 6), got {raw.shape}")
+        height, width = image.shape[:2]
         detections: list[Detection] = []
-        for box in boxes:
-            class_id = int(_scalar(getattr(box, "cls")))
+        for x1, y1, x2, y2, confidence, class_id_raw in raw[0]:
+            confidence = float(confidence)
+            if not np.isfinite(confidence) or confidence < self.conf_threshold:
+                continue
+            box = np.array([(x1 - pad_x) / scale, (y1 - pad_y) / scale, (x2 - pad_x) / scale, (y2 - pad_y) / scale])
+            box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
+            box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
+            if not np.isfinite(box).all() or box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            class_id = int(class_id_raw)
             detections.append(
-                Detection(
-                    bbox_xyxy=tuple(float(value) for value in _xyxy_values(getattr(box, "xyxy"))),
-                    class_id=class_id,
-                    confidence=float(_scalar(getattr(box, "conf"))),
-                    label=str(names.get(class_id, "")) if hasattr(names, "get") else "",
-                )
+                Detection(tuple(float(value) for value in box), class_id, confidence, self.class_names.get(class_id, ""))
             )
         return detections
+
+
+def _preprocess(image: np.ndarray, image_size: int) -> tuple[np.ndarray, float, float, float]:
+    height, width = image.shape[:2]
+    scale = min(image_size / height, image_size / width)
+    resized_width, resized_height = round(width * scale), round(height * scale)
+    resized = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+    pad_x = (image_size - resized_width) / 2.0
+    pad_y = (image_size - resized_height) / 2.0
+    left, right = round(pad_x - 0.1), round(pad_x + 0.1)
+    top, bottom = round(pad_y - 0.1), round(pad_y + 0.1)
+    letterboxed = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+    rgb = letterboxed[:, :, ::-1].transpose(2, 0, 1)
+    tensor = np.ascontiguousarray(rgb[None], dtype=np.float32) / 255.0
+    return tensor, scale, float(left), float(top)
 
 
 def _validate_color_bgr(color_bgr: np.ndarray) -> None:
@@ -106,44 +100,3 @@ def _validate_conf_threshold(conf_threshold: float) -> float:
     if not np.isfinite(value) or value < 0.0 or value > 1.0:
         raise ValueError("conf_threshold must be a finite float in [0.0, 1.0]")
     return value
-
-
-def _validate_model_type(model_type: str) -> str:
-    value = str(model_type).lower()
-    if value not in {"auto", "yolo", "yolov10"}:
-        raise ValueError("model_type must be one of: auto, yolo, yolov10")
-    return value
-
-
-def _select_model_class(model_type: str):
-    if model_type == "yolov10":
-        if YOLOv10 is None:
-            raise ImportError("ultralytics.YOLOv10 is required for model_type='yolov10'")
-        return YOLOv10
-    if model_type == "yolo":
-        if YOLO is None:
-            message = "ultralytics.YOLO is required for model_type='yolo'"
-            if _YOLO_IMPORT_ERROR is not None:
-                message = f"{message}: {_YOLO_IMPORT_ERROR}"
-            raise ImportError(message) from _YOLO_IMPORT_ERROR
-        return YOLO
-    model_class = YOLOv10 or YOLO
-    if model_class is None:
-        message = "ultralytics is required to use UltralyticsYoloDetector"
-        if _YOLO_IMPORT_ERROR is not None:
-            message = f"{message}: {_YOLO_IMPORT_ERROR}"
-        raise ImportError(message) from _YOLO_IMPORT_ERROR
-    return model_class
-
-
-def _xyxy_values(value: Any) -> list[float]:
-    first = value[0] if hasattr(value, "__getitem__") else value
-    values = first.tolist() if hasattr(first, "tolist") else first
-    if len(values) != 4:
-        raise ValueError("YOLO box xyxy must contain four values")
-    return values
-
-
-def _scalar(value: Any) -> float:
-    first = value[0] if hasattr(value, "__getitem__") else value
-    return first.item() if hasattr(first, "item") else first

@@ -11,10 +11,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from visual_deploy.camera.realsense_source import RealSenseSource
-from visual_deploy.config import load_config, resolve_path
-from visual_deploy.detection.yolo_detector import UltralyticsYoloDetector
+from visual_deploy.config import load_config
+from visual_deploy.inference.factory import build_detector, build_segmentor
 from visual_deploy.pipeline.offline_pipeline import OfflinePipeline
-from visual_deploy.segmentation.gcnet_segmentor import GCNetSegmentor
 
 
 def main() -> None:
@@ -22,8 +21,8 @@ def main() -> None:
     config_path = Path(args.config)
     config = load_config(config_path)
 
-    detector = _build_detector(config_path, config)
-    segmentor = _build_segmentor(config_path, config)
+    detector = build_detector(config_path, config)
+    segmentor = build_segmentor(config_path, config)
     source = _build_source(config)
     pipeline = OfflinePipeline(detector=detector, segmentor=segmentor, config=config)
 
@@ -35,27 +34,6 @@ def main() -> None:
                 break
     finally:
         source.close()
-
-
-def _build_detector(config_path: Path, config: dict) -> UltralyticsYoloDetector:
-    det_cfg = config.get("detection", {})
-    weights = resolve_path(config_path, det_cfg.get("weights", "weights/yolo_detect.pt"))
-    if not weights.exists():
-        raise FileNotFoundError(f"YOLO weights not found: {weights}")
-    return UltralyticsYoloDetector(
-        weights,
-        conf_threshold=float(det_cfg.get("conf_threshold", 0.25)),
-        device=det_cfg.get("device"),
-        model_type=det_cfg.get("model_type", "auto"),
-    )
-
-
-def _build_segmentor(config_path: Path, config: dict) -> GCNetSegmentor:
-    seg_cfg = config.get("segmentation", {})
-    weights = resolve_path(config_path, seg_cfg.get("weights", "weights/rgbd_gcnet_l03_robustft_inference.pt"))
-    if not weights.exists():
-        raise FileNotFoundError(f"GCNet weights not found: {weights}")
-    return GCNetSegmentor(weights, device=seg_cfg.get("device", "cpu"))
 
 
 def _build_source(config: dict) -> RealSenseSource:

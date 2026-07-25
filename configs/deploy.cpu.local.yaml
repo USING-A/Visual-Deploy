@@ -8,9 +8,11 @@ camera:
   hole_filling_filter: false
 
 detection:
-  weights: weights/yolo_detect.pt
-  model_type: yolov10
-  conf_threshold: 0.25
+  weights: weights/yolov10_sam_robust_standard.onnx
+  backend: onnxruntime
+  image_size: 640
+  class_names: {0: apple}
+  conf_threshold: 0.50
   device: cpu
 
 tracking:
@@ -25,7 +27,8 @@ roi:
   pad_ratio: 0.20
 
 segmentation:
-  weights: weights/rgbd_gcnet_l03_robustft_inference.pt
+  weights: weights/rgbd_gcnet_l03_robustft.onnx
+  backend: onnxruntime
   threshold: 0.5
   device: cpu
   input_color_order: bgr

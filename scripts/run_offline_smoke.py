@@ -13,8 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from visual_deploy.config import load_config, resolve_path
-from visual_deploy.detection.yolo_detector import MockDetector, UltralyticsYoloDetector
+from visual_deploy.config import load_config
+from visual_deploy.detection.yolo_detector import MockDetector
+from visual_deploy.inference.factory import build_detector, build_segmentor
 from visual_deploy.pipeline.offline_pipeline import OfflinePipeline
 from visual_deploy.segmentation.gcnet_segmentor import GCNetSegmentor, SegmentResult
 from visual_deploy.types import CameraIntrinsics, DeployFrame
@@ -67,28 +68,21 @@ def main() -> None:
 
 
 def _build_detector(config_path: Path, config: dict, *, use_mock_models: bool) -> object:
-    det_cfg = config.get("detection", {})
-    weights = resolve_path(config_path, det_cfg.get("weights", "weights/yolo_detect.pt"))
-    if weights.exists():
-        return UltralyticsYoloDetector(
-            weights,
-            conf_threshold=float(det_cfg.get("conf_threshold", 0.25)),
-            device=det_cfg.get("device"),
-            model_type=det_cfg.get("model_type", "auto"),
-        )
     if not use_mock_models:
-        raise FileNotFoundError(f"YOLO weights not found: {weights}")
-    return MockDetector(confidence=0.9)
+        return build_detector(config_path, config)
+    try:
+        return build_detector(config_path, config)
+    except FileNotFoundError:
+        return MockDetector(confidence=0.9)
 
 
 def _build_segmentor(config_path: Path, config: dict, *, use_mock_models: bool) -> object:
-    seg_cfg = config.get("segmentation", {})
-    weights = resolve_path(config_path, seg_cfg.get("weights", "weights/rgbd_gcnet_l03_robustft_inference.pt"))
-    if weights.exists():
-        return GCNetSegmentor(weights, device=seg_cfg.get("device", "cpu"))
     if not use_mock_models:
-        raise FileNotFoundError(f"GCNet weights not found: {weights}")
-    return _MockSegmentor()
+        return build_segmentor(config_path, config)
+    try:
+        return build_segmentor(config_path, config)
+    except FileNotFoundError:
+        return _MockSegmentor()
 
 
 def _parse_args() -> argparse.Namespace:

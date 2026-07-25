@@ -1,0 +1,32 @@
+{
+  "format": "rgbd-gcnet-reparameterized-probability-onnx",
+  "source_torchscript": "D:\\Github Code\\Visual-Deploy\\weights\\rgbd_gcnet_l03_robustft_inference.pt",
+  "source_torchscript_sha256": "8031cab79937766b31e34a804f246e4ea75930f87e2da11879f35bbc3539e426",
+  "onnx_sha256": "a90917388178c223c441e66bd0c363c7c2af8e948ddf9cbaa92bf763d4390330",
+  "opset": 17,
+  "inputs": {
+    "bgr": [
+      1,
+      3,
+      256,
+      256
+    ],
+    "depth_mm": [
+      1,
+      1,
+      256,
+      256
+    ]
+  },
+  "output": {
+    "prob": [
+      1,
+      1,
+      256,
+      256
+    ]
+  },
+  "mask_postprocess": "prob >= segmentation.threshold",
+  "verification_mean_abs_error": 1.2469876082832343e-06,
+  "verification_max_abs_error": 1.1861324310302734e-05
+}

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import warnings
 from collections import deque
 from dataclasses import dataclass
 from os import PathLike
-from typing import Any
 
 import numpy as np
-import torch
+
+from visual_deploy.inference.session import InferenceSession, create_inference_session
 
 
 @dataclass(frozen=True, eq=False)
@@ -19,42 +18,35 @@ class SegmentResult:
 
 
 class GCNetSegmentor:
-    def __init__(self, model_path: str | PathLike[str], device: str | torch.device = "cpu") -> None:
-        self.device = self._resolve_device(device)
-        self.model = torch.jit.load(str(model_path), map_location=self.device)
-        self.model.eval()
+    def __init__(
+        self,
+        model_path: str | PathLike[str],
+        device: str = "cpu",
+        backend: str = "auto",
+        threshold: float = 0.5,
+        *,
+        session: InferenceSession | None = None,
+    ) -> None:
+        self.threshold = float(threshold)
+        if not np.isfinite(self.threshold) or not 0.0 <= self.threshold <= 1.0:
+            raise ValueError("threshold must be finite and in [0.0, 1.0]")
+        self.session = session or create_inference_session(model_path, device=device, backend=backend)
+        if set(self.session.input_names) != {"bgr", "depth_mm"}:
+            raise ValueError(f"GCNet inputs must be bgr and depth_mm, got {self.session.input_names}")
+        if "prob" not in self.session.output_names:
+            raise ValueError(f"GCNet output must include prob, got {self.session.output_names}")
 
     def infer(self, color_bgr_256: np.ndarray, depth_mm_256: np.ndarray) -> SegmentResult:
         color = np.asarray(color_bgr_256)
         depth = np.asarray(depth_mm_256)
         self._validate_inputs(color, depth)
-
-        bgr = np.ascontiguousarray(color.transpose(2, 0, 1), dtype=np.float32)
-        depth_mm = np.ascontiguousarray(depth, dtype=np.float32)
-        bgr_tensor = torch.from_numpy(bgr).unsqueeze(0).to(self.device)
-        depth_tensor = torch.from_numpy(depth_mm).unsqueeze(0).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            prob, mask = self.model(bgr_tensor, depth_tensor)
-
-        prob_256 = self._to_256_numpy(prob, "prob").astype(np.float32, copy=False)
-        mask_256 = self._to_256_numpy(mask, "mask") > 0
+        bgr = np.ascontiguousarray(color.transpose(2, 0, 1)[None], dtype=np.float32)
+        depth_mm = np.ascontiguousarray(depth[None, None], dtype=np.float32)
+        outputs = self.session.run({"bgr": bgr, "depth_mm": depth_mm})
+        prob_256 = self._to_256_numpy(outputs["prob"], "prob").astype(np.float32, copy=False)
+        mask_256 = prob_256 >= self.threshold
         mask_area = int(mask_256.sum())
-        largest_component_ratio = _largest_component_ratio(mask_256)
-        return SegmentResult(
-            prob_256=prob_256,
-            mask_256=mask_256,
-            mask_area=mask_area,
-            largest_component_ratio=largest_component_ratio,
-        )
-
-    @staticmethod
-    def _resolve_device(device: str | torch.device) -> torch.device:
-        requested = torch.device(device)
-        if requested.type == "cuda" and not torch.cuda.is_available():
-            warnings.warn("CUDA requested but unavailable; falling back to CPU", RuntimeWarning, stacklevel=2)
-            return torch.device("cpu")
-        return requested
+        return SegmentResult(prob_256, mask_256, mask_area, _largest_component_ratio(mask_256))
 
     @staticmethod
     def _validate_inputs(color: np.ndarray, depth: np.ndarray) -> None:
@@ -68,8 +60,8 @@ class GCNetSegmentor:
             raise ValueError("depth_mm_256 must contain only finite values")
 
     @staticmethod
-    def _to_256_numpy(tensor: Any, name: str) -> np.ndarray:
-        arr = tensor.detach().cpu().numpy()
+    def _to_256_numpy(value: np.ndarray, name: str) -> np.ndarray:
+        arr = np.asarray(value)
         if arr.shape == (1, 1, 256, 256):
             arr = arr[0, 0]
         elif arr.shape != (256, 256):
@@ -83,24 +75,20 @@ def _largest_component_ratio(mask: np.ndarray) -> float:
     total = int(mask.sum())
     if total == 0:
         return 0.0
-
     try:
         import cv2
     except ImportError:
         return _largest_component_ratio_bfs(mask, total)
-
     component_count, _, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=4)
     if component_count <= 1:
         return 0.0
-    largest = int(stats[1:, cv2.CC_STAT_AREA].max())
-    return float(largest / total)
+    return float(int(stats[1:, cv2.CC_STAT_AREA].max()) / total)
 
 
 def _largest_component_ratio_bfs(mask: np.ndarray, total: int) -> float:
     visited = np.zeros(mask.shape, dtype=bool)
     largest = 0
     height, width = mask.shape
-
     for row in range(height):
         for col in range(width):
             if not mask[row, col] or visited[row, col]:
@@ -116,5 +104,4 @@ def _largest_component_ratio_bfs(mask: np.ndarray, total: int) -> float:
                         visited[nr, nc] = True
                         queue.append((nr, nc))
             largest = max(largest, size)
-
     return float(largest / total)

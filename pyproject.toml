@@ -11,7 +11,7 @@ dependencies = [
   "numpy",
   "opencv-python",
   "pyyaml",
-  "torch",
+  "onnxruntime",
 ]
 
 [project.optional-dependencies]

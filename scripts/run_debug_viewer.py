@@ -16,10 +16,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from visual_deploy.camera.realsense_source import RealSenseSource
-from visual_deploy.config import load_config, resolve_path
+from visual_deploy.config import load_config
 from visual_deploy.debug.overlay import DebugOverlayOptions, depth_to_bgr, render_debug_overlay
 from visual_deploy.debug.snapshot import DebugSnapshot
-from visual_deploy.detection.yolo_detector import MockDetector, UltralyticsYoloDetector
+from visual_deploy.detection.yolo_detector import MockDetector
+from visual_deploy.inference.factory import build_detector, build_segmentor
 from visual_deploy.pipeline.offline_pipeline import OfflinePipeline
 from visual_deploy.segmentation.gcnet_segmentor import GCNetSegmentor, SegmentResult
 from visual_deploy.types import CameraIntrinsics, DeployFrame, GraspTarget
@@ -37,6 +38,7 @@ def main() -> None:
     args = _parse_args()
     config_path = Path(args.config)
     config = load_config(config_path)
+    config.setdefault("debug", {})["enabled"] = True
 
     detector = _build_detector(config_path, config, use_mock_models=bool(args.use_mock_models))
     segmentor = _build_segmentor(config_path, config, use_mock_models=bool(args.use_mock_models))
@@ -167,28 +169,21 @@ def _append_status_bar(image: np.ndarray, lines: list[str]) -> np.ndarray:
 
 
 def _build_detector(config_path: Path, config: dict, *, use_mock_models: bool) -> object:
-    det_cfg = config.get("detection", {})
-    weights = resolve_path(config_path, det_cfg.get("weights", "weights/yolo_detect.pt"))
-    if weights.exists():
-        return UltralyticsYoloDetector(
-            weights,
-            conf_threshold=float(det_cfg.get("conf_threshold", 0.25)),
-            device=det_cfg.get("device"),
-            model_type=det_cfg.get("model_type", "auto"),
-        )
     if not use_mock_models:
-        raise FileNotFoundError(f"YOLO weights not found: {weights}")
-    return MockDetector(confidence=0.9)
+        return build_detector(config_path, config)
+    try:
+        return build_detector(config_path, config)
+    except FileNotFoundError:
+        return MockDetector(confidence=0.9)
 
 
 def _build_segmentor(config_path: Path, config: dict, *, use_mock_models: bool) -> object:
-    seg_cfg = config.get("segmentation", {})
-    weights = resolve_path(config_path, seg_cfg.get("weights", "weights/rgbd_gcnet_l03_robustft_inference.pt"))
-    if weights.exists():
-        return GCNetSegmentor(weights, device=seg_cfg.get("device", "cpu"))
     if not use_mock_models:
-        raise FileNotFoundError(f"GCNet weights not found: {weights}")
-    return _MockSegmentor()
+        return build_segmentor(config_path, config)
+    try:
+        return build_segmentor(config_path, config)
+    except FileNotFoundError:
+        return _MockSegmentor()
 
 
 def _build_source(args: argparse.Namespace, config: dict) -> Iterator[DeployFrame]:
@@ -239,7 +234,7 @@ def _offline_source(args: argparse.Namespace) -> Iterator[DeployFrame]:
 
 def _save_snapshot(run_dir: Path, frame: DeployFrame, view_bgr: np.ndarray) -> None:
     debug_dir = run_dir / "debug_snapshots"
-    debug_dir.mkdir(exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(debug_dir / f"{frame.frame_id:06d}_view.jpg"), view_bgr)
     cv2.imwrite(str(debug_dir / f"{frame.frame_id:06d}_rgb.jpg"), frame.color_bgr)
     np.save(debug_dir / f"{frame.frame_id:06d}_depth_mm.npy", frame.depth_mm)
