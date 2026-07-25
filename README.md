@@ -1,65 +1,64 @@
-# Visual-Deploy
+# Visual-Deploy 2.0
 
-Visual-Deploy is a self-contained RGB-D deployment pipeline for apple grasp
-target generation. It acquires aligned RGB-D frames, detects apples, stabilizes
-detections across frames, segments each confirmed ROI, selects a suction grasp
-patch, records intermediate results, and returns a camera-frame grasp target.
+Visual-Deploy is a self-contained RealSense RGB-D pipeline that returns one
+camera-frame apple grasp target. Version 2.0 runs detection and segmentation
+from ONNX or device-built TensorRT engines. Training repositories and custom
+training modules are not runtime dependencies.
 
-Runtime code imports only this repository, installed Python packages, local
-configuration, and local weights. The research repositories are used only for
-model training/export and are not runtime dependencies.
+## What changed in 2.0
 
-## Features
+- The detector is a standard YOLOv10n inference graph exported from the selected
+  false-positive-sensitive SAM-YOLO checkpoint. ECA/CBAM and the training-only
+  SAM auxiliary head are absent from the deployment graph.
+- Both YOLOv10 and RGBD-GCNet use ONNX Runtime on a PC. A shared TensorRT engine
+  session and a Jetson-side `trtexec` build script are included.
+- The validated dual-threshold tracker is used: high `0.50`, low `0.10`, IoU
+  `0.30`, `min_hits=1`, and `max_lost=30` at 30 FPS.
+- Timing, debug snapshots, diagnostics, JSONL logs, and artifacts have explicit
+  switches and are off by default. Camera-layer safety validation remains on.
+- Runtime telemetry now reserves capture, stage, queue, dropped-frame, frame-age,
+  and device-resource fields for later bounded-queue threading work.
 
-- RealSense D435i RGB-D source with depth aligned to color.
-- YOLOv10 apple detector loaded from exported/local `.pt` weights.
-- Confidence gating, IoU tracking, and ROI-remapped per-track depth fusion.
-- Reparameterized RGBD-GCNet TorchScript segmentation.
-- ROI-safe geometry mapping from detector box to 256x256 GCNet input and back
-  to full-frame pixels.
-- Suction grasp patch selection and camera-frame `(u, v, z_mm, xyz, pose)`
-  output.
-- Configurable target-score, confidence, mask-quality, normal-angle, and
-  temporal-continuity safety gates.
-- JSONL recording of detections, ranked candidates, rejection reasons,
-  targets, stage timings, diagnostic events, and errors.
-
-## Pipeline
+## Runtime pipeline
 
 ```text
-RealSense D435i RGB-D frame
-  -> YOLOv10 detection
-  -> confidence gate and IoU tracker
-  -> per-track ROI crop and depth fusion
-  -> exported RGBD-GCNet segmentation
-  -> suction grasp patch selection
-  -> target ranking
-  -> static and temporal safety validation
-  -> GraspTarget
+aligned D435i color + depth_mm
+  -> standard YOLOv10 ONNX/TensorRT
+  -> dual-threshold IoU association
+  -> ROI-remapped per-track depth fusion
+  -> RGBD-GCNet ONNX/TensorRT, fixed 256 x 256 ROI
+  -> suction patch geometry and ranking
+  -> static safety and per-track continuity validation
+  -> GraspTarget in the camera frame
 ```
 
-Depth is carried in millimeters inside the runtime. Camera backprojection uses
-`CameraIntrinsics.depth_scale=0.001`, so `depth_mm * 0.001 = meters`.
+Depth remains in millimeters until backprojection. `depth_scale=0.001` converts
+the selected depth to meters for `xyz_camera_m`.
 
-## Project Layout
+## Model artifacts
+
+| Artifact | Contract | SHA-256 |
+|---|---|---|
+| `weights/yolov10_sam_robust_standard.onnx` | `images [1,3,640,640] -> output0 [1,300,6]` | `3632ee3f...68a5330` |
+| `weights/rgbd_gcnet_l03_robustft.onnx` | `bgr [1,3,256,256] + depth_mm [1,1,256,256] -> prob [1,1,256,256]` | `a9091738...d4390330` |
+
+The exact source paths, full hashes, input/output shapes, and export checks are
+stored beside each model in `.onnx.json` files.
+
+The detector source is:
 
 ```text
-configs/deploy.yaml                 Runtime configuration
-requirements.txt                    Deployment environment requirements
-vendor/                             Vendored YOLOv10-compatible wheel
-weights/                            Local model weights, ignored by Git
-scripts/export_gcnet_l03_inference.py
-scripts/run_debug_viewer.py
-scripts/run_offline_smoke.py
-scripts/run_realtime.py
-visual_deploy/                      Runtime package
-tests/                              Unit and smoke tests
-docs/deployment.md                  Detailed deployment notes
+D:\Github Code\yolov10-improved\runs\sam_negative_mixed_finetune\
+seed2_lr2e-4_e5_source75_negative25\weights\best.pt
 ```
 
-## Installation
+The deployment setting is `detection.conf_threshold: 0.50`. The selected model
+keeps apple validation mAP50-95 at `0.74469` and reduced held-out negative boxes
+by `93.9%` at confidence 0.50 in its selection audit.
 
-Use Python 3.10 on the deployment PC.
+## PC installation
+
+Use Python 3.10 or newer:
 
 ```powershell
 cd "D:\Github Code\Visual-Deploy"
@@ -69,170 +68,83 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-For a CUDA deployment, install the PyTorch build that matches the target GPU
-and driver first, then run the same requirements command. The validated export
-environment used `torch 2.0.1+cu118`.
+`requirements-export.txt` is only for a development machine that must recreate
+the ONNX files. It is not needed at runtime.
 
-## Required Weights
+## Run
 
-Create `weights/` and place:
-
-```text
-weights/yolo_detect.pt
-weights/rgbd_gcnet_l03_robustft_inference.pt
-```
-
-Current validated sources:
-
-```text
-yolo_detect.pt
-  D:\Github Code\yolov10-improved\runs\apple\04_combinations\combo_cbam_eca_e150_fresh_direct\weights\best.pt
-
-rgbd_gcnet_l03_robustft_inference.pt
-  exported from D:\Github Code\RGBD-GCNet\work_dirs\apple_roi\finetune\l03_apple_robust_aug_train_only_20260626\best_mIoU_iter_3000.pth
-```
-
-The detector config must keep:
-
-```yaml
-detection:
-  model_type: yolov10
-```
-
-PyPI `ultralytics==8.1.34` does not provide `YOLOv10`. This project vendors
-the YOLOv10-compatible `ultralytics` wheel built from `yolov10-improved`.
-
-## GCNet Export
-
-Run from the Visual-Deploy root when the RGBD-GCNet development environment is
-available:
-
-```powershell
-$env:PYTHONUTF8='1'
-D:\Github Code\RGBD-GCNet\.venv\Scripts\python.exe scripts\export_gcnet_l03_inference.py `
-  --config "D:\Github Code\RGBD-GCNet\configs\fuji\seg\rgbd_gcnet_s_roi_cme_afm_boundary_l03_apple_robust_aug_train_only.py" `
-  --checkpoint "D:\Github Code\RGBD-GCNet\work_dirs\apple_roi\finetune\l03_apple_robust_aug_train_only_20260626\best_mIoU_iter_3000.pth" `
-  --output weights\rgbd_gcnet_l03_robustft_inference.pt `
-  --device cpu `
-  --rgbd-root "D:\Github Code\RGBD-GCNet"
-```
-
-The export calls the improved GCNet `switch_to_deploy()` path so training-time
-heavy GC blocks are reparameterized before TorchScript tracing.
-
-## Offline Smoke
-
-Real weights:
+Offline RGB-D check:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_offline_smoke.py `
-  --config configs\deploy.yaml `
-  --rgb samples\rgb.png `
-  --depth samples\depth_mm.npy `
+  --config configs\deploy.cpu.local.yaml `
+  --rgb samples\rgb.png --depth samples\depth_mm.npy `
   --fx 600 --fy 600 --ppx 320 --ppy 240
 ```
 
-Pipeline-only mock mode:
+The four intrinsics above are examples only. Use the intrinsics stored with the
+offline frame. Live mode reads the color-stream intrinsics from the D435i.
+
+Live D435i:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_offline_smoke.py `
-  --config configs\deploy.yaml `
-  --rgb samples\rgb.png `
-  --depth samples\depth_mm.npy `
-  --fx 600 --fy 600 --ppx 320 --ppy 240 `
-  --use-mock-models
+.\.venv\Scripts\python.exe scripts\run_realtime.py --config configs\deploy.yaml
 ```
 
-Mock mode is explicit. Missing real weights fail loudly by default.
-
-## Realtime Run
-
-With D435i connected and both weights present:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\run_realtime.py --config configs\deploy.yaml --max-frames 30
-```
-
-`camera.align_to_color` must remain `true`; detections and grasp points are
-color-frame pixels. The RealSense source uses `rs.align(rs.stream.color)` and
-converts the aligned depth frame to millimeters before inference.
-
-## Debug Viewer
-
-For lightweight visual debugging:
+Sparse debug viewer:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_debug_viewer.py --config configs\deploy.yaml
 ```
 
-The main RGB view is intentionally sparse: YOLO boxes, optional mask tint, and
-the selected grasp point. Target numbers and controls are shown in a bottom
-status bar instead of being stacked over the image. Detailed records remain in
-JSONL files and terminal output.
+Viewer keys are `q`/`Esc` quit, `p` pause, `m` mask, `d` depth, and `s` snapshot.
+The viewer enables only the in-memory debug snapshot it needs.
 
-Keys:
+## Runtime switches
 
-```text
-q / Esc  quit
-p        pause/resume
-m        show/hide mask
-d        show/hide depth preview
-s        save current debug snapshot under runs/<run>/debug_snapshots/
+Production defaults do not create a `runs/` directory.
+
+```yaml
+profiling:
+  enabled: false
+debug:
+  enabled: false
+diagnostics:
+  enabled: false
+recording:
+  enabled: false
+  save_detections: false
+  save_candidates: false
+  save_targets: false
+  save_errors: false
+  save_timings: false
+  save_events: false
+  save_event_artifacts: false
 ```
 
-Small in-image labels are off by default. Enable them only when needed:
+Enable `recording.enabled` plus only the channels needed for a specific test.
+`profiling.enabled` adds `timings.jsonl`; `diagnostics.enabled` permits configured
+safety/continuity events and artifacts.
 
-```powershell
-.\.venv\Scripts\python.exe scripts\run_debug_viewer.py --config configs\deploy.yaml --labels
+## Jetson Orin NX quick path
+
+1. Install a matching JetPack 6.2.x stack and verify TensorRT and CUDA.
+2. Install and verify the D435i with `realsense-viewer`.
+3. Install the NVIDIA PyTorch wheel that matches that exact JetPack release.
+4. Create a virtual environment with system packages visible, then install
+   `requirements-jetson.txt` and this project with `--no-deps`.
+5. Copy the ONNX files to the Jetson and build `.engine` files on that Jetson:
+
+```bash
+python3 scripts/build_tensorrt_engines.py \
+  --trtexec /usr/src/tensorrt/bin/trtexec
 ```
 
-Offline frame check:
+6. Change both model paths to `.engine` and both backends to `tensorrt`.
+7. Run a fixed offline RGB-D check before connecting the realtime camera.
 
-```powershell
-.\.venv\Scripts\python.exe scripts\run_debug_viewer.py `
-  --config configs\deploy.yaml `
-  --rgb samples\rgb.png `
-  --depth samples\depth_mm.npy `
-  --fx 600 --fy 600 --ppx 320 --ppy 240 `
-  --repeat-frames 30
-```
-
-## Outputs
-
-Each run creates a timestamped directory under `runs/`:
-
-```text
-run_config.yaml
-detections.jsonl
-candidates.jsonl
-targets.jsonl
-timings.jsonl
-events.jsonl
-errors.jsonl
-frames/
-depth/
-masks/
-overlays/
-```
-
-`candidates.jsonl` records computed target scores, rank, selection state, and
-the first available rejection evidence. `timings.jsonl` separates detection,
-tracking, depth fusion, segmentation, grasp search, ranking/safety, recording,
-diagnostics, and total latency.
-
-RGB, raw depth, masks, and overlays are saved only for configured safety or
-continuity events. `recording.event_cooldown_frames` bounds artifact volume.
-
-For a valid target:
-
-```text
-u_px, v_px       Full-frame color pixel
-z_mm             Selected patch depth in millimeters
-xyz_camera_m     Camera-frame point in meters
-normal_xyz       Local patch normal
-approach_axis    Suction approach direction, equal to -normal_xyz
-target_score     Weighted ranking score
-```
+TensorRT engines must not be copied between different TensorRT/JetPack/device
+stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md).
 
 ## Verification
 
@@ -240,32 +152,12 @@ target_score     Weighted ranking score
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current validation command:
+Current verified result: `170 passed`.
 
-```text
-python -m pytest -q
-```
+## Safety and threading scope
 
-## Deployment Copy Checklist
-
-Copy this folder to the target PC with:
-
-```text
-configs/
-docs/
-scripts/
-vendor/
-visual_deploy/
-weights/
-README.md
-requirements.txt
-pyproject.toml
-```
-
-Do not copy `runs/`, `.venv/`, `.pytest_cache/`, or `__pycache__/`.
-
-## Non-Goals
-
-This repository does not perform robot extrinsics, robot workspace validation,
-IK, collision checking, or threaded worker optimization. It returns the
-camera-layer grasp target and suction approach direction only.
+The camera-layer safety line is closed for the current target contract. It does
+not include robot extrinsics, workspace checks, IK, collision avoidance, actuator
+limits, emergency stop, or hardware interlocks. See
+[docs/deployment_v2_runtime_audit.md](docs/deployment_v2_runtime_audit.md) for the
+exact closure boundary and the remaining Orin/threading measurements.

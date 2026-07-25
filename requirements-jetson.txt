@@ -1,0 +1,4 @@
+# Jetson engine runtime uses JetPack's system TensorRT/OpenCV/RealSense packages.
+# Install the NVIDIA PyTorch wheel matching the installed JetPack separately.
+numpy==1.26.4
+PyYAML==6.0.3

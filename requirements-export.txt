@@ -1,5 +1,5 @@
 # Model export is a development-machine concern, not a Jetson runtime dependency.
-torch==2.7.0
+torch
 onnx==1.17.0
 onnxruntime==1.19.2
 onnxslim==0.1.72
