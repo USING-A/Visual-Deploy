@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from visual_deploy.tracking.tracker import ConfidenceGate, DepthRoiStats, SimpleIoUTracker
+from visual_deploy.tracking.tracker import ConfidenceGate, DepthRoiStats, DualThresholdIoUTracker, SimpleIoUTracker
 from visual_deploy.types import Detection
 
 
@@ -85,3 +86,30 @@ def test_depth_roi_stats_invalid_channel_shapes_fail_closed():
 
     assert extractor.extract(empty_channel, (0, 0, 3, 2)).state == "invalid"
     assert extractor.extract(higher_rank, (0, 0, 3, 2)).state == "invalid"
+
+
+def test_dual_threshold_low_detection_cannot_create_track():
+    tracker = DualThresholdIoUTracker(high_threshold=0.5, low_threshold=0.1, min_hits=1)
+    assert tracker.update([Detection((0, 0, 10, 10), 0, 0.4)]) == []
+
+
+def test_dual_threshold_low_detection_continues_high_created_track():
+    tracker = DualThresholdIoUTracker(high_threshold=0.5, low_threshold=0.1, min_hits=1)
+    created = tracker.update([Detection((0, 0, 10, 10), 0, 0.8)])[0]
+    continued = tracker.update([Detection((1, 0, 11, 10), 0, 0.2)])[0]
+    assert continued.track_id == created.track_id
+    assert continued.confidence == 0.2
+
+
+def test_dual_threshold_high_association_has_priority():
+    tracker = DualThresholdIoUTracker(high_threshold=0.5, low_threshold=0.1, min_hits=1)
+    track_id = tracker.update([Detection((0, 0, 10, 10), 0, 0.9)])[0].track_id
+    outputs = tracker.update([Detection((2, 0, 12, 10), 0, 0.7), Detection((0, 0, 10, 10), 0, 0.2)])
+    assert len(outputs) == 1
+    assert outputs[0].track_id == track_id
+    assert outputs[0].confidence == 0.7
+
+
+def test_dual_threshold_rejects_reversed_thresholds():
+    with pytest.raises(ValueError, match="low_threshold"):
+        DualThresholdIoUTracker(high_threshold=0.1, low_threshold=0.5)

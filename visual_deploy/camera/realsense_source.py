@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+from time import perf_counter
 
+from visual_deploy.observability.runtime_telemetry import FrameRuntimeTelemetry, attach_runtime_telemetry
 from visual_deploy.types import CameraIntrinsics, DeployFrame
 
 try:
@@ -57,6 +59,7 @@ class RealSenseSource:
         return self
 
     def __next__(self) -> DeployFrame:
+        capture_started = perf_counter()
         frames = self.pipeline.wait_for_frames()
         if self.align is not None:
             frames = self.align.process(frames)
@@ -89,6 +92,14 @@ class RealSenseSource:
                 "aligned": self.align is not None,
                 "sensor_depth_scale_m": self.depth_scale_m,
             },
+        )
+        captured_monotonic_ms = perf_counter() * 1000.0
+        attach_runtime_telemetry(
+            frame,
+            FrameRuntimeTelemetry(
+                capture_ms=(captured_monotonic_ms - capture_started * 1000.0),
+                captured_monotonic_ms=captured_monotonic_ms,
+            ),
         )
         self.frame_id += 1
         return frame

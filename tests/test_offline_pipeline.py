@@ -8,6 +8,7 @@ from visual_deploy.pipeline.offline_pipeline import OfflinePipeline
 from visual_deploy.segmentation.gcnet_segmentor import SegmentResult
 from scripts.run_offline_smoke import _build_detector, _build_segmentor
 from visual_deploy.types import CameraIntrinsics, DeployFrame
+from visual_deploy.observability.runtime_telemetry import FrameRuntimeTelemetry, attach_runtime_telemetry
 
 
 class MockSegmentor:
@@ -64,7 +65,10 @@ def test_offline_pipeline_returns_invalid_when_no_candidate(tmp_path):
     pipeline = OfflinePipeline(
         detector=EmptyDetector(),
         segmentor=MockSegmentor(),
-        config={"recording": {"output_root": str(tmp_path)}},
+        config={
+            "profiling": {"enabled": True},
+            "recording": {"enabled": True, "save_timings": True, "output_root": str(tmp_path)},
+        },
     )
 
     target = pipeline.process_frame(_frame())
@@ -82,7 +86,10 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
     pipeline = OfflinePipeline(
         detector=MockDetector(0.9),
         segmentor=MockSegmentor(),
-        config={"recording": {"output_root": str(tmp_path)}},
+        config={
+            "profiling": {"enabled": True},
+            "recording": {"enabled": True, "save_candidates": True, "save_timings": True, "output_root": str(tmp_path)},
+        },
     )
 
     target = pipeline.process_frame(_frame())
@@ -109,7 +116,7 @@ def test_offline_pipeline_rejects_candidate_that_fails_safety_gate(tmp_path):
         segmentor=MockSegmentor(),
         config={
             "safety": {"enabled": True, "min_target_score": 1.0},
-            "recording": {"output_root": str(tmp_path)},
+            "recording": {"enabled": True, "save_candidates": True, "output_root": str(tmp_path)},
         },
     )
 
@@ -130,8 +137,11 @@ def test_offline_pipeline_saves_event_artifacts_for_safety_rejection(tmp_path):
         segmentor=MockSegmentor(),
         config={
             "safety": {"enabled": True, "min_target_score": 1.0},
+            "diagnostics": {"enabled": True},
             "recording": {
+                "enabled": True,
                 "output_root": str(tmp_path),
+                "save_events": True,
                 "save_event_artifacts": True,
                 "event_stages": ["safety"],
                 "save_frames": True,
@@ -166,7 +176,7 @@ def test_offline_pipeline_rejects_large_same_track_depth_jump(tmp_path):
                 "max_pixel_step_px": 40.0,
                 "max_history_age_ms": 1000.0,
             },
-            "recording": {"output_root": str(tmp_path)},
+            "recording": {"enabled": True, "save_candidates": True, "output_root": str(tmp_path)},
         },
     )
 
@@ -202,14 +212,52 @@ def test_offline_smoke_requires_explicit_mock_models_for_missing_weights(tmp_pat
     config_path.parent.mkdir()
     config_path.write_text("", encoding="utf-8")
 
-    with pytest.raises(FileNotFoundError, match="YOLO weights"):
-        _build_detector(config_path, {"detection": {"weights": "missing_yolo.pt"}}, use_mock_models=False)
+    with pytest.raises(FileNotFoundError, match="YOLOv10 model"):
+        _build_detector(config_path, {"detection": {"weights": "missing_yolo.onnx"}}, use_mock_models=False)
 
-    with pytest.raises(FileNotFoundError, match="GCNet weights"):
-        _build_segmentor(config_path, {"segmentation": {"weights": "missing_gcnet.pt"}}, use_mock_models=False)
+    with pytest.raises(FileNotFoundError, match="GCNet model"):
+        _build_segmentor(config_path, {"segmentation": {"weights": "missing_gcnet.onnx"}}, use_mock_models=False)
 
     assert isinstance(
-        _build_detector(config_path, {"detection": {"weights": "missing_yolo.pt"}}, use_mock_models=True),
+        _build_detector(config_path, {"detection": {"weights": "missing_yolo.onnx"}}, use_mock_models=True),
         MockDetector,
     )
-    assert hasattr(_build_segmentor(config_path, {"segmentation": {"weights": "missing_gcnet.pt"}}, use_mock_models=True), "infer")
+    assert hasattr(_build_segmentor(config_path, {"segmentation": {"weights": "missing_gcnet.onnx"}}, use_mock_models=True), "infer")
+
+
+def test_pipeline_profiling_records_capture_and_future_queue_fields(tmp_path):
+    frame = _frame()
+    attach_runtime_telemetry(
+        frame,
+        FrameRuntimeTelemetry(
+            capture_ms=3.0,
+            queue_wait_ms={"capture_to_inference": 1.5},
+            queue_depth={"capture_to_inference": 1},
+            queue_capacity={"capture_to_inference": 2},
+            dropped_frames={"capture": 4},
+            resources={"gpu_util_percent": 50.0},
+        ),
+    )
+    pipeline = OfflinePipeline(
+        MockDetector(0.9),
+        MockSegmentor(),
+        config={
+            "profiling": {"enabled": True},
+            "recording": {"enabled": True, "save_timings": True, "output_root": str(tmp_path)},
+        },
+    )
+    pipeline.process_frame(frame)
+    timing = json.loads((pipeline.recorder.run_dir / "timings.jsonl").read_text(encoding="utf-8"))
+    assert timing["capture_ms"] == 3.0
+    assert timing["queue_wait_ms"] == {"capture_to_inference": 1.5}
+    assert timing["queue_depth"] == {"capture_to_inference": 1}
+    assert timing["queue_capacity"] == {"capture_to_inference": 2}
+    assert timing["dropped_frames"] == {"capture": 4}
+    assert timing["resources"] == {"gpu_util_percent": 50.0}
+
+
+def test_pipeline_debug_and_recording_are_off_by_default(tmp_path):
+    pipeline = OfflinePipeline(MockDetector(0.9), MockSegmentor(), config={"recording": {"output_root": str(tmp_path)}})
+    pipeline.process_frame(_frame())
+    assert pipeline.last_debug is None
+    assert not pipeline.recorder.run_dir.exists()

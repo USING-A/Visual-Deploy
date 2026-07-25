@@ -89,3 +89,18 @@ def test_recorder_rejects_existing_run_name(tmp_path):
 
     with pytest.raises(FileExistsError):
         RunRecorder(tmp_path, run_name="test_run")
+
+
+def test_recorder_master_switch_creates_no_files(tmp_path):
+    rec = RunRecorder(tmp_path, run_name="disabled", enabled=False)
+    rec.write_detection({"frame_id": 1})
+    rec.write_timing({"frame_id": 1})
+    assert not rec.run_dir.exists()
+
+
+def test_recorder_channel_switch_limits_debug_outputs(tmp_path):
+    rec = RunRecorder(tmp_path, run_name="targets_only", channels={"targets"})
+    rec.write_detection({"frame_id": 1})
+    rec.write_target({"frame_id": 1})
+    assert not (rec.run_dir / "detections.jsonl").exists()
+    assert (rec.run_dir / "targets.jsonl").exists()

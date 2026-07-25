@@ -15,10 +15,11 @@ from visual_deploy.geometry.pose import approach_from_normal
 from visual_deploy.geometry.roi import RoiTransform
 from visual_deploy.ranking.target_ranker import CandidateScores, TargetRanker
 from visual_deploy.recording.recorder import RunRecorder
+from visual_deploy.observability.runtime_telemetry import read_runtime_telemetry
 from visual_deploy.safety.target_continuity import TargetContinuityValidator
 from visual_deploy.safety.target_validator import TargetSafetyValidator, TargetValidation
 from visual_deploy.tracking.depth_fusion import DepthFusionBuffer, FusedTrackDepth
-from visual_deploy.tracking.tracker import ConfidenceGate, DepthRoiStats, SimpleIoUTracker
+from visual_deploy.tracking.tracker import DepthRoiStats, DualThresholdIoUTracker
 from visual_deploy.types import DeployFrame, Detection, GraspTarget, Track
 
 
@@ -41,13 +42,11 @@ class OfflinePipeline:
         self.config = config or {}
 
         tracking_cfg = self.config.get("tracking", {})
-        self.gate = ConfidenceGate(
-            high_threshold=float(tracking_cfg.get("high_conf_threshold", 0.7)),
-            low_threshold=float(tracking_cfg.get("low_conf_threshold", 0.4)),
-        )
         self.depth_stats = DepthRoiStats(**_pick(self.config.get("depth_fusion", {}), "min_depth_mm", "max_depth_mm"))
         self.min_hits = int(tracking_cfg.get("min_hits", 1))
-        self.tracker = SimpleIoUTracker(
+        self.tracker = DualThresholdIoUTracker(
+            high_threshold=float(tracking_cfg.get("high_conf_threshold", 0.5)),
+            low_threshold=float(tracking_cfg.get("low_conf_threshold", 0.1)),
             iou_threshold=float(tracking_cfg.get("iou_threshold", 0.3)),
             max_lost=int(tracking_cfg.get("max_lost", 30)),
             min_hits=self.min_hits,
@@ -57,10 +56,28 @@ class OfflinePipeline:
         self.safety_validator = TargetSafetyValidator.from_config(self.config.get("safety"))
         self.continuity_validator = TargetContinuityValidator.from_config(self.config.get("safety"))
         self.last_debug: DebugSnapshot | None = None
+        self.debug_enabled = bool(self.config.get("debug", {}).get("enabled", False))
+        self.timing_enabled = bool(self.config.get("profiling", {}).get("enabled", False))
 
         recording_cfg = self.config.get("recording", {})
-        self.recorder = RunRecorder(recording_cfg.get("output_root", "runs"), config=self.config)
-        self.save_event_artifacts = bool(recording_cfg.get("save_event_artifacts", False))
+        channels = {
+            name
+            for name in ("detections", "candidates", "targets", "errors", "timings", "events")
+            if bool(recording_cfg.get(f"save_{name}", name in {"targets", "errors"}))
+        }
+        if self.timing_enabled:
+            channels.add("timings")
+        diagnostics_enabled = bool(self.config.get("diagnostics", {}).get("enabled", False))
+        if diagnostics_enabled:
+            channels.add("events")
+        self.recorder = RunRecorder(
+            recording_cfg.get("output_root", "runs"),
+            config=self.config,
+            enabled=bool(recording_cfg.get("enabled", False)),
+            channels=channels,
+            artifacts_enabled=bool(recording_cfg.get("save_event_artifacts", False)),
+        )
+        self.save_event_artifacts = diagnostics_enabled and bool(recording_cfg.get("save_event_artifacts", False))
         self.event_stages = {str(value) for value in recording_cfg.get("event_stages", ("safety", "continuity"))}
         self.event_cooldown_frames = int(recording_cfg.get("event_cooldown_frames", 0))
         if self.event_cooldown_frames < 0:
@@ -75,15 +92,19 @@ class OfflinePipeline:
         detections = self.detector.infer(frame.color_bgr)
         timings["detection_ms"] += _elapsed_ms(stage_started)
         stage_started = perf_counter()
-        gated = self.gate.apply(_attach_depth_stats(detections, frame.depth_mm, self.depth_stats))
-        tracks = self.tracker.update(gated)
+        eligible = [
+            detection
+            for detection in _attach_depth_stats(detections, frame.depth_mm, self.depth_stats)
+            if detection.confidence >= self.tracker.low_threshold
+        ]
+        tracks = self.tracker.update(eligible)
         timings["tracking_ms"] += _elapsed_ms(stage_started)
         stage_started = perf_counter()
         self.recorder.write_detection(
             {
                 "frame_id": frame.frame_id,
                 "timestamp_ms": frame.timestamp_ms,
-                "detections": [_detection_record(detection) for detection in gated],
+                "detections": [_detection_record(detection) for detection in eligible],
             }
         )
 
@@ -148,7 +169,6 @@ class OfflinePipeline:
             }
         )
         timings["recording_ms"] += _elapsed_ms(stage_started)
-        timings["recording_ms"] += _elapsed_ms(stage_started)
 
         if selected is None:
             reason = "no_safe_grasp_candidate" if candidates else "no_valid_grasp_candidate"
@@ -156,8 +176,8 @@ class OfflinePipeline:
             stage_started = perf_counter()
             self.recorder.write_target(asdict(target))
             timings["recording_ms"] += _elapsed_ms(stage_started)
-            self.last_debug = _debug_snapshot(frame, gated, target, candidates)
-            self._finalize_frame(frame, gated, candidates, rejections, target, timings, frame_started)
+            self._update_debug(frame, eligible, target, candidates)
+            self._finalize_frame(frame, eligible, candidates, rejections, target, timings, frame_started)
             return target
 
         best = selected
@@ -183,8 +203,8 @@ class OfflinePipeline:
         stage_started = perf_counter()
         self.recorder.write_target(asdict(target))
         timings["recording_ms"] += _elapsed_ms(stage_started)
-        self.last_debug = _debug_snapshot(frame, gated, target, candidates)
-        self._finalize_frame(frame, gated, candidates, rejections, target, timings, frame_started)
+        self._update_debug(frame, eligible, target, candidates)
+        self._finalize_frame(frame, eligible, candidates, rejections, target, timings, frame_started)
         return target
 
     def _process_track(
@@ -303,15 +323,39 @@ class OfflinePipeline:
             self._last_event_frame_id = frame.frame_id
         timings["diagnostic_ms"] += _elapsed_ms(diagnostic_started)
         timings["total_ms"] = _elapsed_ms(frame_started)
+        if not self.timing_enabled:
+            return
+        telemetry = read_runtime_telemetry(frame)
+        frame_age_ms = (
+            max(0.0, perf_counter() * 1000.0 - telemetry.captured_monotonic_ms)
+            if telemetry.captured_monotonic_ms > 0.0
+            else 0.0
+        )
         self.recorder.write_timing(
             {
                 "frame_id": frame.frame_id,
                 "timestamp_ms": frame.timestamp_ms,
                 "valid_target": target.valid,
                 "target_reason": target.reason,
+                "capture_ms": float(telemetry.capture_ms),
+                "queue_wait_ms": telemetry.queue_wait_ms,
+                "queue_depth": telemetry.queue_depth,
+                "queue_capacity": telemetry.queue_capacity,
+                "dropped_frames": telemetry.dropped_frames,
+                "resources": telemetry.resources,
+                "frame_age_ms": frame_age_ms,
                 **{name: float(value) for name, value in timings.items()},
             }
         )
+
+    def _update_debug(
+        self,
+        frame: DeployFrame,
+        detections: list[Detection],
+        target: GraspTarget,
+        candidates: list[_PipelineCandidate],
+    ) -> None:
+        self.last_debug = _debug_snapshot(frame, detections, target, candidates) if self.debug_enabled else None
 
     def _should_save_event(self, frame_id: int, triggering: list[dict[str, Any]]) -> bool:
         if not self.save_event_artifacts or not triggering:

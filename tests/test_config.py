@@ -19,12 +19,20 @@ def test_load_default_config_has_runtime_sections():
         "grasp",
         "ranking",
         "safety",
+        "profiling",
+        "debug",
+        "diagnostics",
         "recording",
     }
     assert cfg["roi"]["size"] == 256
     assert cfg["roi"]["pad_ratio"] == 0.20
     assert cfg["camera"]["align_to_color"] is True
-    assert cfg["detection"]["model_type"] == "yolov10"
+    assert cfg["detection"]["backend"] == "onnxruntime"
+    assert cfg["detection"]["weights"].endswith(".onnx")
+    assert cfg["segmentation"]["weights"].endswith(".onnx")
+    assert cfg["tracking"]["high_conf_threshold"] == 0.50
+    assert cfg["tracking"]["low_conf_threshold"] == 0.10
+    assert cfg["tracking"]["min_hits"] == 1
     assert cfg["segmentation"]["depth_input_unit"] == "mm"
     assert cfg["safety"]["enabled"] is True
 

@@ -25,7 +25,7 @@ def test_pipeline_exposes_sparse_debug_snapshot_with_image_space_mask(tmp_path):
     pipeline = OfflinePipeline(
         detector=MockDetector(0.9),
         segmentor=MockSegmentor(),
-        config={"recording": {"output_root": str(tmp_path)}},
+        config={"debug": {"enabled": True}, "recording": {"output_root": str(tmp_path)}},
     )
 
     target = pipeline.process_frame(frame)

@@ -16,10 +16,10 @@ detection:
   device: cuda:0
 
 tracking:
-  high_conf_threshold: 0.7
-  low_conf_threshold: 0.4
+  high_conf_threshold: 0.50
+  low_conf_threshold: 0.10
   iou_threshold: 0.3
-  min_hits: 2
+  min_hits: 1
   max_lost: 30
 
 roi:
@@ -70,13 +70,28 @@ safety:
   max_depth_step_mm: 30.0
   max_history_age_ms: 1000.0
 
+profiling:
+  enabled: false
+
+debug:
+  enabled: false
+
+diagnostics:
+  enabled: false
+
 recording:
+  enabled: false
   output_root: runs
-  save_frames: true
-  save_depth: true
-  save_depth_preview: true
-  save_masks: true
-  save_overlays: true
-  save_event_artifacts: true
+  save_detections: false
+  save_candidates: false
+  save_targets: false
+  save_errors: false
+  save_timings: false
+  save_events: false
+  save_frames: false
+  save_depth: false
+  save_masks: false
+  save_overlays: false
+  save_event_artifacts: false
   event_stages: [safety, continuity]
   event_cooldown_frames: 15

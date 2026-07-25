@@ -19,34 +19,37 @@ class RunRecorder:
         output_root: str | Path,
         run_name: str | None = None,
         config: dict[str, Any] | None = None,
+        enabled: bool = True,
+        channels: set[str] | None = None,
+        artifacts_enabled: bool = True,
     ) -> None:
         name = _validate_run_name(run_name) if run_name is not None else _default_run_name()
         self.run_dir = Path(output_root) / name
-        self.run_dir.mkdir(parents=True, exist_ok=False)
-        for subdir in ("frames", "masks", "overlays"):
-            (self.run_dir / subdir).mkdir(exist_ok=True)
-        (self.run_dir / "depth").mkdir(exist_ok=True)
-
-        with (self.run_dir / "run_config.yaml").open("w", encoding="utf-8") as file:
-            yaml.safe_dump(config or {}, file, allow_unicode=True, sort_keys=False)
+        self.enabled = bool(enabled)
+        self.channels = channels if channels is not None else {
+            "detections", "candidates", "targets", "errors", "timings", "events"
+        }
+        self.artifacts_enabled = bool(artifacts_enabled)
+        if self.enabled:
+            self._initialize(config or {})
 
     def write_detection(self, record: dict[str, Any]) -> None:
-        self._write_jsonl("detections.jsonl", record)
+        self._write_jsonl("detections", "detections.jsonl", record)
 
     def write_candidate(self, record: dict[str, Any]) -> None:
-        self._write_jsonl("candidates.jsonl", record)
+        self._write_jsonl("candidates", "candidates.jsonl", record)
 
     def write_target(self, record: dict[str, Any]) -> None:
-        self._write_jsonl("targets.jsonl", record)
+        self._write_jsonl("targets", "targets.jsonl", record)
 
     def write_error(self, record: dict[str, Any]) -> None:
-        self._write_jsonl("errors.jsonl", record)
+        self._write_jsonl("errors", "errors.jsonl", record)
 
     def write_timing(self, record: dict[str, Any]) -> None:
-        self._write_jsonl("timings.jsonl", record)
+        self._write_jsonl("timings", "timings.jsonl", record)
 
     def write_event(self, record: dict[str, Any]) -> None:
-        self._write_jsonl("events.jsonl", record)
+        self._write_jsonl("events", "events.jsonl", record)
 
     def save_event_artifacts(
         self,
@@ -57,6 +60,8 @@ class RunRecorder:
         masks: list[tuple[int, np.ndarray]] | None = None,
         overlay_bgr: np.ndarray | None = None,
     ) -> dict[str, Any]:
+        if not self.enabled or not self.artifacts_enabled:
+            return {}
         stem = f"{int(frame_id):06d}"
         artifacts: dict[str, Any] = {}
         if color_bgr is not None:
@@ -80,7 +85,16 @@ class RunRecorder:
             artifacts["overlay"] = str(path.relative_to(self.run_dir))
         return artifacts
 
-    def _write_jsonl(self, filename: str, record: Mapping[str, Any]) -> None:
+    def _initialize(self, config: dict[str, Any]) -> None:
+        self.run_dir.mkdir(parents=True, exist_ok=False)
+        for subdir in ("frames", "masks", "overlays", "depth"):
+            (self.run_dir / subdir).mkdir(exist_ok=True)
+        with (self.run_dir / "run_config.yaml").open("w", encoding="utf-8") as file:
+            yaml.safe_dump(config, file, allow_unicode=True, sort_keys=False)
+
+    def _write_jsonl(self, channel: str, filename: str, record: Mapping[str, Any]) -> None:
+        if not self.enabled or channel not in self.channels:
+            return
         if not isinstance(record, Mapping):
             raise TypeError("record must be a mapping")
         with (self.run_dir / filename).open("a", encoding="utf-8") as file:
