@@ -2,3 +2,4 @@
 # Install the NVIDIA PyTorch wheel matching the installed JetPack separately.
 numpy==1.26.4
 PyYAML==6.0.3
+psutil==5.9.8

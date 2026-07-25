@@ -12,6 +12,7 @@ dependencies = [
   "opencv-python",
   "pyyaml",
   "onnxruntime",
+  "psutil",
 ]
 
 [project.optional-dependencies]

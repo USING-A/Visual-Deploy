@@ -6,6 +6,7 @@ numpy==1.26.4
 opencv-python==4.11.0.86
 PyYAML==6.0.3
 onnxruntime==1.19.2
+psutil==5.9.8
 
 # RealSense D435i runtime. If installation fails on a target PC, install the
 # Intel RealSense SDK first, then rerun requirements installation.

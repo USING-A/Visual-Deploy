@@ -254,6 +254,7 @@ def test_pipeline_profiling_records_capture_and_future_queue_fields(tmp_path):
     assert timing["queue_capacity"] == {"capture_to_inference": 2}
     assert timing["dropped_frames"] == {"capture": 4}
     assert timing["resources"] == {"gpu_util_percent": 50.0}
+    assert timing["completed_monotonic_ms"] > 0.0
 
 
 def test_pipeline_debug_and_recording_are_off_by_default(tmp_path):

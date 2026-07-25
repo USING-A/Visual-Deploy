@@ -48,12 +48,13 @@ the synchronous pipeline. `timings.jsonl` can contain:
 - attachable resource samples such as CPU load, RSS, GPU utilization, GPU memory,
   temperature, and power.
 
-The data schema is complete enough to decide queue boundaries and identify stale
-frames. Data collection is intentionally incomplete until the threaded runtime
-exists: there are no real queue measurements in the synchronous runner, and Jetson
-resource samples must be attached by the future `tegrastats`/device sampler. The
-first threading experiment should use bounded queues of size 1 or 2 and keep YOLO
-and GCNet GPU execution serialized until Orin measurements show a reason to change it.
+`scripts/collect_thread_profile.py` now automates synchronous stage timing,
+process CPU/RSS sampling, optional Jetson `tegrastats` capture, aggregation, and
+report generation. The schema and non-queue collectors are complete for the
+baseline run. Real queue measurements remain intentionally unavailable until the
+threaded runtime exists. The first threading experiment should use bounded queues
+of size 1 or 2 and keep YOLO and GCNet GPU execution serialized until paired Orin
+measurements show a reason to change it.
 
 ## Switches
 

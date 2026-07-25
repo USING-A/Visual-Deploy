@@ -207,13 +207,73 @@ For Jetson profiling, record the power mode and clocks before comparing runs:
 ```bash
 sudo nvpmodel -q --verbose
 sudo jetson_clocks --show
-tegrastats --interval 1000 --logfile runs/tegrastats.log
 ```
 
 Choose an approved power mode for the carrier, cooling, and supply. Use
 `jetson_clocks` only for a controlled benchmark if that is part of the test plan.
 
-## 7. Threading acceptance data
+## 7. Automated collection and analysis
+
+The automated collector runs the normal deployment entry point as a child
+process. It forces only profiling and timing recording on in a generated config;
+debug views, diagnostics, event artifacts, RGB, depth, masks, and other JSONL
+channels remain off.
+
+Realtime Orin collection:
+
+```bash
+source .venv/bin/activate
+python scripts/collect_thread_profile.py \
+  --mode realtime \
+  --config configs/deploy.yaml \
+  --frames 900 \
+  --warmup-frames 60 \
+  --sample-interval-ms 1000
+```
+
+`--tegrastats auto` is the default. It starts `tegrastats` when the executable is
+on `PATH`; use `--tegrastats /path/to/tegrastats` for an explicit binary or
+`--tegrastats off` on a laptop. Use `--timeout-s` to enforce a maximum collection
+duration. `Ctrl+C` and timeouts terminate both child processes before analysis.
+When TensorRT engines are active, replace `configs/deploy.yaml` with the
+Jetson-local engine config created in section 5.4.
+
+Offline laptop collection uses the same RGB-D and intrinsic arguments as the
+offline smoke entry:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\collect_thread_profile.py `
+  --mode offline --config configs\deploy.cpu.local.yaml `
+  --rgb samples\rgb.png --depth samples\depth_mm.npy `
+  --fx 600 --fy 600 --ppx 320 --ppy 240 `
+  --frames 300 --warmup-frames 20 --tegrastats off
+```
+
+Output layout:
+
+```text
+runs/thread_profiles/thread_profile_<UTC timestamp>/
+  manifest.json
+  profile_config.yaml
+  child_stdout.log
+  child_stderr.log
+  process_resources.jsonl
+  tegrastats.log
+  tegrastats.jsonl
+  summary.json
+  summary.csv
+  report.md
+  pipeline_runs/<run>/timings.jsonl
+```
+
+The summary reports mean, minimum, P50, P95, P99, maximum, pipeline FPS measured
+between completed frames, and end-to-end collection FPS including model startup. The
+recommendation section checks dominant stages, frame-age budget, bounded-queue
+pressure/drops, and Jetson CPU/GPU saturation. Preserve raw files when comparing
+two implementations; the generated recommendation text is not a substitute for
+paired measurements from the same scene, power mode, and model engines.
+
+## 8. Threading acceptance data
 
 Before implementing threads, collect at least:
 
@@ -227,7 +287,12 @@ Start with `capture -> bounded queue -> one serialized GPU worker -> CPU
 postprocess/recording`. Queue capacity should initially be 1 or 2 so stale frames
 are dropped instead of accumulating latency. Change this only from Orin evidence.
 
-## 8. Safety boundary
+The current synchronous runner provides stage/resource baselines but no real
+queue measurements. After bounded queues are added, the existing telemetry
+contract will automatically include queue wait, depth, capacity, and drops in the
+same `timings.jsonl` and analysis report.
+
+## 9. Safety boundary
 
 The visual runtime fails closed on invalid depth, segmentation, grasp geometry,
 static target quality, and same-track temporal jumps. Optional event logs preserve
@@ -235,7 +300,7 @@ the rejection evidence. This is a camera-layer safety contract only. Robot-frame
 extrinsics, workspace, IK, collision avoidance, emergency stop, actuator limits,
 and physical interlocks belong to the robot control system.
 
-## 9. Official platform references
+## 10. Official platform references
 
 - [NVIDIA JetPack 6.2](https://developer.nvidia.com/embedded/jetpack-sdk-62)
 - [NVIDIA JetPack documentation](https://docs.nvidia.com/jetson/jetpack/)

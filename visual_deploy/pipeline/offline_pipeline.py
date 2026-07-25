@@ -344,6 +344,7 @@ class OfflinePipeline:
                 "dropped_frames": telemetry.dropped_frames,
                 "resources": telemetry.resources,
                 "frame_age_ms": frame_age_ms,
+                "completed_monotonic_ms": perf_counter() * 1000.0,
                 **{name: float(value) for name, value in timings.items()},
             }
         )

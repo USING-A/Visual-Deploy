@@ -126,6 +126,37 @@ Enable `recording.enabled` plus only the channels needed for a specific test.
 `profiling.enabled` adds `timings.jsonl`; `diagnostics.enabled` permits configured
 safety/continuity events and artifacts.
 
+## Automated threading profile collection
+
+The collector creates a temporary timing-only config, runs the existing offline
+or realtime entry point, samples process CPU/RSS, starts `tegrastats` automatically
+when it is available, and writes JSONL, JSON, CSV, and Markdown reports.
+
+Laptop/offline example:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\collect_thread_profile.py `
+  --mode offline --config configs\deploy.cpu.local.yaml `
+  --rgb samples\rgb.png --depth samples\depth_mm.npy `
+  --fx 600 --fy 600 --ppx 320 --ppy 240 `
+  --frames 300 --warmup-frames 20 --tegrastats off
+```
+
+Jetson/realtime example:
+
+```bash
+python scripts/collect_thread_profile.py \
+  --mode realtime --config configs/deploy.yaml \
+  --frames 900 --warmup-frames 60
+```
+
+Each session is created under `runs/thread_profiles/` and contains `report.md`,
+`summary.json`, `summary.csv`, raw process/tegrastats JSONL, child logs, the
+generated config, and the pipeline `timings.jsonl`. The synchronous runtime does
+not have queues, so queue fields remain empty until bounded queues are implemented.
+Pass a Jetson-local engine config instead of `configs/deploy.yaml` when validating
+TensorRT engines.
+
 ## Jetson Orin NX quick path
 
 1. Install a matching JetPack 6.2.x stack and verify TensorRT and CUDA.
@@ -152,7 +183,7 @@ stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md)
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current verified result: `170 passed`.
+Current verified result: `178 passed`.
 
 ## Safety and threading scope
 
