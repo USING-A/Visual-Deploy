@@ -109,9 +109,44 @@ def test_offline_collection_runs_child_and_generates_reports(tmp_path):
 
     session_dir = Path(result["session_dir"])
     assert result["status"] == "complete"
+    assert result["exit_code"] == 0
     assert result["frame_count"] == 3
     summary = json.loads((session_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["frame_count_analyzed"] == 2
     assert summary["timings"]["total_ms"]["count"] == 2.0
     assert (session_dir / "process_resources.jsonl").is_file()
     assert (session_dir / "report.md").is_file()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"timed_out": True}, ("timed_out", 124)),
+        ({"interrupted": True}, ("interrupted", 130)),
+        ({"child_return_code": 7}, ("child_failed", 7)),
+        ({"frame_count": 0}, ("invalid_output", 2)),
+        ({"analyzed_frames": 0}, ("invalid_output", 2)),
+        ({"tegrastats_sample_count": 0}, ("incomplete_telemetry", 3)),
+        ({"tegrastats_exited_early": True}, ("incomplete_telemetry", 3)),
+    ],
+)
+def test_profile_status_fails_closed_for_incomplete_runs(overrides, expected):
+    values = {
+        "child_return_code": 0,
+        "timed_out": False,
+        "interrupted": False,
+        "frame_count": 10,
+        "expected_frames": 10,
+        "analyzed_frames": 9,
+        "tegrastats_requested": True,
+        "tegrastats_sample_count": 2,
+        "tegrastats_exited_early": False,
+    }
+    values.update(overrides)
+    assert COLLECTOR._determine_profile_status(**values) == expected
+
+
+def test_collection_args_reject_warmup_that_consumes_the_run():
+    args = argparse.Namespace(frames=10, warmup_frames=10, sample_interval_ms=1000, timeout_s=None)
+    with pytest.raises(ValueError, match="smaller than frames"):
+        COLLECTOR._validate_collection_args(args)

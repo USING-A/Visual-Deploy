@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from visual_deploy.types import CameraIntrinsics
@@ -45,72 +45,19 @@ def _validate_intrinsics(intr: CameraIntrinsics) -> None:
 
 
 def _largest_component(mask: np.ndarray) -> np.ndarray:
-    h, w = mask.shape
-    seen = np.zeros_like(mask, dtype=bool)
-    best: list[tuple[int, int]] = []
-    neighbors = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-
-    for y, x in zip(*np.nonzero(mask)):
-        if seen[y, x]:
-            continue
-        q: deque[tuple[int, int]] = deque([(int(y), int(x))])
-        seen[y, x] = True
-        pixels: list[tuple[int, int]] = []
-        while q:
-            cy, cx = q.popleft()
-            pixels.append((cy, cx))
-            for dy, dx in neighbors:
-                ny, nx = cy + dy, cx + dx
-                if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not seen[ny, nx]:
-                    seen[ny, nx] = True
-                    q.append((ny, nx))
-        if len(pixels) > len(best):
-            best = pixels
-
-    component = np.zeros_like(mask, dtype=bool)
-    if best:
-        ys, xs = zip(*best)
-        component[np.asarray(ys), np.asarray(xs)] = True
-    return component
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    if count <= 1:
+        return np.zeros_like(mask, dtype=bool)
+    largest_label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    return labels == largest_label
 
 
 def _chamfer_distance_to_background(component: np.ndarray) -> np.ndarray:
-    h, w = component.shape
-    inf = np.float32(h + w + 1)
-    dist = np.full((h, w), inf, dtype=np.float32)
-    dist[~component] = 0.0
-    root2 = np.float32(np.sqrt(2.0))
-
-    for y in range(h):
-        for x in range(w):
-            if not component[y, x]:
-                continue
-            best = dist[y, x]
-            if y > 0:
-                best = min(best, dist[y - 1, x] + 1.0)
-                if x > 0:
-                    best = min(best, dist[y - 1, x - 1] + root2)
-                if x + 1 < w:
-                    best = min(best, dist[y - 1, x + 1] + root2)
-            if x > 0:
-                best = min(best, dist[y, x - 1] + 1.0)
-            dist[y, x] = best
-
-    for y in range(h - 1, -1, -1):
-        for x in range(w - 1, -1, -1):
-            if not component[y, x]:
-                continue
-            best = dist[y, x]
-            if y + 1 < h:
-                best = min(best, dist[y + 1, x] + 1.0)
-                if x > 0:
-                    best = min(best, dist[y + 1, x - 1] + root2)
-                if x + 1 < w:
-                    best = min(best, dist[y + 1, x + 1] + root2)
-            if x + 1 < w:
-                best = min(best, dist[y, x + 1] + 1.0)
-            dist[y, x] = best
-    return dist
+    return cv2.distanceTransform(
+        component.astype(np.uint8),
+        distanceType=cv2.DIST_L2,
+        maskSize=cv2.DIST_MASK_PRECISE,
+    ).astype(np.float32, copy=False)
 
 
 def _backproject_pixels(
@@ -170,6 +117,15 @@ def _candidate_score(
     )
 
 
+def _masked_median(values: np.ndarray, valid: np.ndarray, counts: np.ndarray) -> np.ndarray:
+    flattened = np.where(valid, values, np.inf).reshape(values.shape[0], -1)
+    ordered = np.sort(flattened, axis=1)
+    rows = np.arange(ordered.shape[0])
+    lower = (counts - 1) // 2
+    upper = counts // 2
+    return ((ordered[rows, lower] + ordered[rows, upper]) * 0.5).astype(np.float32, copy=False)
+
+
 def _iter_patch_candidates(
     mask: np.ndarray,
     depth_mm: np.ndarray,
@@ -184,6 +140,7 @@ def _iter_patch_candidates(
     max_depth_mad_m: float,
 ) -> list[GraspPatch]:
     mask_arr, depth_arr = _validate_inputs(mask, depth_mm)
+    _validate_intrinsics(intr)
     if patch_radius_px <= 0 or stride_px <= 0:
         raise ValueError("patch_radius_px and stride_px must be positive")
 
@@ -203,85 +160,127 @@ def _iter_patch_candidates(
     yy, xx = np.ogrid[-rr : rr + 1, -rr : rr + 1]
     circle = (yy * yy + xx * xx) <= rr * rr
     circle_area = int(circle.sum())
-    candidates: list[GraspPatch] = []
+    center_ys, center_xs = np.meshgrid(
+        np.arange(y0, y1 + 1, int(stride_px), dtype=np.int32),
+        np.arange(x0, x1 + 1, int(stride_px), dtype=np.int32),
+        indexing="ij",
+    )
+    center_ys = center_ys.ravel()
+    center_xs = center_xs.ravel()
+    height, width = component.shape
+    boundary_min = float(patch_radius_px) if min_boundary_distance_px is None else float(min_boundary_distance_px)
+    eligible = (
+        component[center_ys, center_xs]
+        & (center_ys >= rr)
+        & (center_xs >= rr)
+        & (center_ys + rr < height)
+        & (center_xs + rr < width)
+        & (dist[center_ys, center_xs] >= boundary_min)
+    )
+    center_ys, center_xs = center_ys[eligible], center_xs[eligible]
+    if center_ys.size == 0:
+        return []
 
-    for cy in range(y0, y1 + 1, int(stride_px)):
-        for cx in range(x0, x1 + 1, int(stride_px)):
-            if not component[cy, cx]:
-                continue
+    size = 2 * rr + 1
+    component_windows = np.lib.stride_tricks.sliding_window_view(component, (size, size))[
+        center_ys - rr, center_xs - rr
+    ]
+    patch_masks = component_windows & circle[None]
+    patch_areas = patch_masks.sum(axis=(1, 2), dtype=np.int32)
+    keep = patch_areas >= max(min_valid_depth_count, circle_area // 3)
+    center_ys, center_xs, patch_masks, patch_areas = (
+        center_ys[keep],
+        center_xs[keep],
+        patch_masks[keep],
+        patch_areas[keep],
+    )
+    if center_ys.size == 0:
+        return []
 
-            py0, py1 = cy - rr, cy + rr + 1
-            px0, px1 = cx - rr, cx + rr + 1
-            if py0 < 0 or px0 < 0 or py1 > component.shape[0] or px1 > component.shape[1]:
-                continue
+    depth_windows = np.lib.stride_tricks.sliding_window_view(depth_arr, (size, size))[
+        center_ys - rr, center_xs - rr
+    ]
+    valid = patch_masks & np.isfinite(depth_windows) & (depth_windows > 0.0)
+    valid_counts = valid.sum(axis=(1, 2), dtype=np.int32)
+    valid_ratios = valid_counts.astype(np.float32) / np.maximum(patch_areas, 1)
+    keep = (valid_counts >= min_valid_depth_count) & (valid_ratios >= min_valid_depth_ratio)
+    center_ys, center_xs, patch_areas, depth_windows, valid, valid_counts, valid_ratios = (
+        center_ys[keep],
+        center_xs[keep],
+        patch_areas[keep],
+        depth_windows[keep],
+        valid[keep],
+        valid_counts[keep],
+        valid_ratios[keep],
+    )
+    if center_ys.size == 0:
+        return []
 
-            local_component = component[py0:py1, px0:px1]
-            patch_mask = circle & local_component
-            patch_area = int(patch_mask.sum())
-            if patch_area < max(min_valid_depth_count, circle_area // 3):
-                continue
+    offsets = np.arange(-rr, rr + 1, dtype=np.float32)
+    pixel_x = center_xs[:, None, None].astype(np.float32) + offsets[None, None, :]
+    pixel_y = center_ys[:, None, None].astype(np.float32) + offsets[None, :, None]
+    z_m = np.where(valid, depth_windows * np.float32(intr.depth_scale), 0.0).astype(np.float32)
+    x_m = ((pixel_x - np.float32(intr.ppx)) / np.float32(intr.fx)) * z_m
+    y_m = ((pixel_y - np.float32(intr.ppy)) / np.float32(intr.fy)) * z_m
+    points = np.stack(np.broadcast_arrays(x_m, y_m, z_m), axis=-1).astype(np.float64)
+    weights = valid.astype(np.float64)[..., None]
+    counts = valid_counts.astype(np.float64)[:, None]
+    means = (points * weights).sum(axis=(1, 2), dtype=np.float64) / counts
+    centered = (points - means[:, None, None, :]) * weights
+    covariance = np.einsum("nhwi,nhwj->nij", centered, centered, optimize=True) / counts[:, :, None]
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    normals = eigenvectors[:, :, 0].astype(np.float32, copy=False)
+    normals[normals[:, 2] > 0.0] *= -1.0
+    plane_rmse = np.sqrt(np.maximum(eigenvalues[:, 0], 0.0)).astype(np.float32, copy=False)
 
-            local_depth = depth_arr[py0:py1, px0:px1]
-            valid = patch_mask & np.isfinite(local_depth) & (local_depth > 0.0)
-            valid_count = int(valid.sum())
-            valid_ratio = float(valid_count / max(patch_area, 1))
-            if valid_count < min_valid_depth_count or valid_ratio < min_valid_depth_ratio:
-                continue
+    median_depth = _masked_median(z_m, valid, valid_counts)
+    depth_mad = _masked_median(np.abs(z_m - median_depth[:, None, None]), valid, valid_counts)
+    keep = (plane_rmse <= max_plane_rmse_m) & (depth_mad <= max_depth_mad_m)
+    center_ys, center_xs, patch_areas, valid_counts, valid_ratios, normals, plane_rmse, median_depth, depth_mad = (
+        center_ys[keep],
+        center_xs[keep],
+        patch_areas[keep],
+        valid_counts[keep],
+        valid_ratios[keep],
+        normals[keep],
+        plane_rmse[keep],
+        median_depth[keep],
+        depth_mad[keep],
+    )
+    if center_ys.size == 0:
+        return []
 
-            vy_local, vx_local = np.nonzero(valid)
-            vx = vx_local.astype(np.float32) + float(px0)
-            vy = vy_local.astype(np.float32) + float(py0)
-            depths_mm = local_depth[valid]
-            points = _backproject_pixels(vx, vy, depths_mm, intr)
-            try:
-                normal, plane_rmse = _plane_stats(points)
-            except ValueError:
-                continue
-            if plane_rmse > max_plane_rmse_m:
-                continue
-
-            depths_m = depths_mm.astype(np.float32) * np.float32(intr.depth_scale)
-            z_m = float(np.median(depths_m))
-            depth_mad = float(np.median(np.abs(depths_m - z_m)))
-            if depth_mad > max_depth_mad_m:
-                continue
-
-            boundary_distance = float(dist[cy, cx])
-            boundary_min = float(patch_radius_px) if min_boundary_distance_px is None else float(min_boundary_distance_px)
-            if boundary_distance < boundary_min:
-                continue
-
-            centroid_distance = float(np.hypot(float(cy) - centroid_y, float(cx) - centroid_x))
-            score = _candidate_score(
-                valid_ratio,
-                boundary_distance,
-                rr,
-                centroid_distance,
-                max_centroid_distance,
-                plane_rmse,
-                max_plane_rmse_m,
-                depth_mad,
-                max_depth_mad_m,
-                valid_count,
-                patch_area,
-            )
-            candidates.append(
-                GraspPatch(
-                    u_px=float(cx),
-                    v_px=float(cy),
-                    z_m=z_m,
-                    normal_xyz=normal,
-                    score=score,
-                    valid_depth_ratio=valid_ratio,
-                    valid_depth_count=valid_count,
-                    plane_rmse_m=plane_rmse,
-                    depth_mad_m=depth_mad,
-                    boundary_distance_px=boundary_distance,
-                    component_area_px=component_area,
-                )
-            )
-
-    return candidates
+    boundary_distances = dist[center_ys, center_xs].astype(np.float32, copy=False)
+    centroid_distances = np.hypot(center_ys - centroid_y, center_xs - centroid_x).astype(np.float32, copy=False)
+    boundary_scores = np.minimum(boundary_distances / max(float(rr) * 2.0, 1.0), 1.0)
+    centroid_scores = np.maximum(0.0, 1.0 - centroid_distances / max(max_centroid_distance, 1.0))
+    plane_scores = np.maximum(0.0, 1.0 - plane_rmse / max(max_plane_rmse_m, 1e-9))
+    mad_scores = np.maximum(0.0, 1.0 - depth_mad / max(max_depth_mad_m, 1e-9))
+    support_scores = np.minimum(valid_counts / np.maximum(patch_areas.astype(np.float32), 1.0), 1.0)
+    scores = (
+        0.25 * valid_ratios
+        + 0.30 * boundary_scores
+        + 0.20 * plane_scores
+        + 0.10 * mad_scores
+        + 0.10 * support_scores
+        + 0.05 * centroid_scores
+    )
+    index = int(np.argmax(scores))
+    return [
+        GraspPatch(
+            u_px=float(center_xs[index]),
+            v_px=float(center_ys[index]),
+            z_m=float(median_depth[index]),
+            normal_xyz=normals[index],
+            score=float(scores[index]),
+            valid_depth_ratio=float(valid_ratios[index]),
+            valid_depth_count=int(valid_counts[index]),
+            plane_rmse_m=float(plane_rmse[index]),
+            depth_mad_m=float(depth_mad[index]),
+            boundary_distance_px=float(boundary_distances[index]),
+            component_area_px=component_area,
+        )
+    ]
 
 
 def select_grasp_patch(

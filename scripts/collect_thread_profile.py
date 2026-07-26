@@ -33,8 +33,8 @@ def main() -> None:
     args = _parse_args()
     result = collect_profile(args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    if result["child_return_code"] != 0:
-        raise SystemExit(int(result["child_return_code"]))
+    if result["exit_code"] != 0:
+        raise SystemExit(int(result["exit_code"]))
 
 
 def collect_profile(args: argparse.Namespace) -> dict[str, Any]:
@@ -42,6 +42,7 @@ def collect_profile(args: argparse.Namespace) -> dict[str, Any]:
         import psutil
     except ImportError as exc:
         raise RuntimeError("psutil is required; install deployment requirements before profiling") from exc
+    _validate_collection_args(args)
 
     config_path = Path(args.config).resolve()
     source_config = load_config(config_path)
@@ -80,6 +81,7 @@ def collect_profile(args: argparse.Namespace) -> dict[str, Any]:
 
     tegra_process: subprocess.Popen[str] | None = None
     tegra_thread: threading.Thread | None = None
+    tegra_exited_early = False
     with child_stdout_path.open("w", encoding="utf-8") as child_stdout, child_stderr_path.open(
         "w", encoding="utf-8"
     ) as child_stderr, tegrastats_raw_path.open("w", encoding="utf-8") as tegra_log:
@@ -94,25 +96,46 @@ def collect_profile(args: argparse.Namespace) -> dict[str, Any]:
         process.cpu_percent(interval=None)
 
         if tegrastats_command:
-            tegra_process = subprocess.Popen(
-                tegrastats_command,
-                cwd=PROJECT_ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            assert tegra_process.stdout is not None
-            tegra_thread = threading.Thread(
-                target=_read_tegrastats,
-                args=(tegra_process.stdout, tegra_log, tegrastats_lines, started),
-                daemon=True,
-            )
-            tegra_thread.start()
+            try:
+                tegra_process = subprocess.Popen(
+                    tegrastats_command,
+                    cwd=PROJECT_ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                assert tegra_process.stdout is not None
+                tegra_thread = threading.Thread(
+                    target=_read_tegrastats,
+                    args=(tegra_process.stdout, tegra_log, tegrastats_lines, started),
+                    daemon=True,
+                )
+                tegra_thread.start()
+            except Exception as exc:
+                _terminate_process(child)
+                child_return_code = child.wait()
+                if tegra_process is not None:
+                    _terminate_process(tegra_process)
+                if tegra_thread is not None:
+                    tegra_thread.join(timeout=5.0)
+                manifest.update(
+                    {
+                        "status": "collector_failed",
+                        "finished_utc": datetime.now(timezone.utc).isoformat(),
+                        "child_return_code": child_return_code,
+                        "exit_code": 2,
+                        "error": f"failed to start tegrastats: {exc}",
+                    }
+                )
+                _write_json(session_dir / "manifest.json", manifest)
+                raise RuntimeError(f"failed to start tegrastats: {tegrastats_command[0]}") from exc
 
         timed_out = False
         try:
             while child.poll() is None:
+                if tegra_process is not None and tegra_process.poll() is not None:
+                    tegra_exited_early = True
                 elapsed_s = time.monotonic() - started
                 if args.timeout_s is not None and elapsed_s >= args.timeout_s:
                     timed_out = True
@@ -155,24 +178,38 @@ def collect_profile(args: argparse.Namespace) -> dict[str, Any]:
     summary["collection_fps_including_startup"] = len(timing_records) / duration_s if duration_s > 0.0 else 0.0
     write_profile_reports(session_dir, summary)
 
+    status, exit_code = _determine_profile_status(
+        child_return_code=child_return_code,
+        timed_out=timed_out,
+        interrupted=bool(manifest.get("interrupted")),
+        frame_count=len(timing_records),
+        expected_frames=args.frames,
+        analyzed_frames=int(summary["frame_count_analyzed"]),
+        tegrastats_requested=tegrastats_command is not None,
+        tegrastats_sample_count=len(tegrastats_samples),
+        tegrastats_exited_early=tegra_exited_early,
+    )
+
     manifest.update(
         {
-            "status": "timed_out"
-            if timed_out
-            else ("interrupted" if manifest.get("interrupted") else ("complete" if child_return_code == 0 else "child_failed")),
+            "status": status,
+            "exit_code": exit_code,
             "finished_utc": datetime.now(timezone.utc).isoformat(),
             "duration_s": duration_s,
             "child_return_code": child_return_code,
             "timings_path": str(timing_path) if timing_path else None,
             "frame_count": len(timing_records),
+            "expected_frame_count": args.frames,
             "process_sample_count": len(process_samples),
             "tegrastats_sample_count": len(tegrastats_samples),
+            "tegrastats_exited_early": tegra_exited_early,
         }
     )
     _write_json(session_dir / "manifest.json", manifest)
     return {
         "session_dir": str(session_dir),
         "status": manifest["status"],
+        "exit_code": exit_code,
         "child_return_code": child_return_code,
         "frame_count": len(timing_records),
         "report": str(session_dir / "report.md"),
@@ -321,6 +358,42 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _validate_collection_args(args: argparse.Namespace) -> None:
+    if int(args.frames) <= 0:
+        raise ValueError("frames must be positive")
+    if int(args.warmup_frames) < 0 or int(args.warmup_frames) >= int(args.frames):
+        raise ValueError("warmup_frames must be non-negative and smaller than frames")
+    if int(args.sample_interval_ms) <= 0:
+        raise ValueError("sample_interval_ms must be positive")
+    if args.timeout_s is not None and float(args.timeout_s) <= 0.0:
+        raise ValueError("timeout_s must be positive")
+
+
+def _determine_profile_status(
+    *,
+    child_return_code: int,
+    timed_out: bool,
+    interrupted: bool,
+    frame_count: int,
+    expected_frames: int,
+    analyzed_frames: int,
+    tegrastats_requested: bool,
+    tegrastats_sample_count: int,
+    tegrastats_exited_early: bool,
+) -> tuple[str, int]:
+    if timed_out:
+        return "timed_out", 124
+    if interrupted:
+        return "interrupted", 130
+    if child_return_code != 0:
+        return "child_failed", child_return_code if child_return_code > 0 else 1
+    if frame_count != expected_frames or analyzed_frames <= 0:
+        return "invalid_output", 2
+    if tegrastats_requested and (tegrastats_sample_count <= 0 or tegrastats_exited_early):
+        return "incomplete_telemetry", 3
+    return "complete", 0
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Collect deployment timing/resources and generate threading optimization reports."
@@ -345,6 +418,8 @@ def _parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.warmup_frames < 0:
         parser.error("--warmup-frames must be non-negative")
+    if args.warmup_frames >= args.frames:
+        parser.error("--warmup-frames must be smaller than --frames")
     if args.timeout_s is not None and args.timeout_s <= 0.0:
         parser.error("--timeout-s must be positive")
     return args

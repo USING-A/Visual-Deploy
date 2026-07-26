@@ -157,6 +157,10 @@ not have queues, so queue fields remain empty until bounded queues are implement
 Pass a Jetson-local engine config instead of `configs/deploy.yaml` when validating
 TensorRT engines.
 
+Incomplete timing, child failure, timeout, interruption, or a failed requested
+tegrastats stream returns a typed nonzero exit status and remains recorded in
+`manifest.json`; these runs are never reported as complete.
+
 ## Jetson Orin NX quick path
 
 1. Install a matching JetPack 6.2.x stack and verify TensorRT and CUDA.
@@ -183,7 +187,11 @@ stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md)
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current verified result: `178 passed`.
+Current verified result: `196 passed`.
+
+The release-confidence evidence and the mandatory Jetson device acceptance gate
+are recorded in
+[docs/release_confidence_audit_20260726.md](docs/release_confidence_audit_20260726.md).
 
 ## Safety and threading scope
 

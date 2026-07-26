@@ -157,6 +157,8 @@ def build_profile_summary(
 def make_threading_recommendations(summary: Mapping[str, Any]) -> list[str]:
     recommendations: list[str] = []
     timings = summary.get("timings", {})
+    if int(summary.get("frame_count_analyzed", 0) or 0) <= 0:
+        recommendations.append("No timing frames were available; do not use this run for threading decisions.")
     total_mean = _stat(timings, "total_ms", "mean")
     stage_names = (
         "detection_ms",

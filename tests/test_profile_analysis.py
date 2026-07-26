@@ -94,3 +94,8 @@ def test_write_profile_reports_creates_machine_and_human_readable_outputs(tmp_pa
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "Effective pipeline FPS: 25.00" in report
     assert "## Recommendations" in report
+
+
+def test_empty_profile_is_explicitly_not_actionable():
+    summary = build_profile_summary([], [], [], warmup_frames=0)
+    assert any("No timing frames" in item for item in summary["recommendations"])

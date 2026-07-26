@@ -6,6 +6,7 @@ import argparse
 import shutil
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 
 def main() -> None:
@@ -24,12 +25,17 @@ def _build(trtexec: Path, source: Path, output: Path, *, fp16: bool) -> None:
     if not source.is_file():
         raise FileNotFoundError(f"ONNX model not found: {source}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    command = [str(trtexec), f"--onnx={source}", f"--saveEngine={output}", "--skipInference"]
+    temporary = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
+    command = [str(trtexec), f"--onnx={source}", f"--saveEngine={temporary}", "--skipInference"]
     if fp16:
         command.append("--fp16")
-    subprocess.run(command, check=True)
-    if not output.is_file() or output.stat().st_size == 0:
-        raise RuntimeError(f"TensorRT did not create a valid engine: {output}")
+    try:
+        subprocess.run(command, check=True)
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise RuntimeError(f"TensorRT did not create a valid engine: {temporary}")
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
     print(f"Wrote TensorRT engine: {output}")
 
 

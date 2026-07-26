@@ -37,6 +37,18 @@ def test_load_default_config_has_runtime_sections():
     assert cfg["safety"]["enabled"] is True
 
 
+def test_cpu_config_preserves_production_safety_and_temporal_contracts():
+    production = load_config(Path("configs/deploy.yaml"))
+    cpu = load_config(Path("configs/deploy.cpu.local.yaml"))
+
+    assert cpu["tracking"] == production["tracking"]
+    assert cpu["depth_fusion"] == production["depth_fusion"]
+    assert cpu["safety"] == production["safety"]
+    assert cpu["profiling"] == production["profiling"]
+    assert cpu["debug"] == production["debug"]
+    assert cpu["diagnostics"] == production["diagnostics"]
+
+
 def test_load_config_rejects_non_mapping_yaml(tmp_path):
     cfg_path = tmp_path / "deploy.yaml"
     cfg_path.write_text("[]\n", encoding="utf-8")

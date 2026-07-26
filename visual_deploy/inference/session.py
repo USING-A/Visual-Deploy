@@ -126,7 +126,10 @@ class TensorRTEngineSession:
             dtype = _torch_dtype(self.trt.nptype(self.engine.get_tensor_dtype(name)), torch)
             buffers[name] = torch.empty(shape, dtype=dtype, device=self.device)
         for name, tensor in buffers.items():
-            self.context.set_tensor_address(name, int(tensor.data_ptr()))
+            _require_trt_success(
+                self.context.set_tensor_address(name, int(tensor.data_ptr())),
+                f"set_tensor_address({name})",
+            )
         stream = torch.cuda.current_stream(self.device)
         if not self.context.execute_async_v3(stream_handle=stream.cuda_stream):
             raise RuntimeError("TensorRT execute_async_v3 failed")
@@ -141,7 +144,10 @@ class TensorRTEngineSession:
             index = self.engine.get_binding_index(name)
             tensor = torch.as_tensor(inputs[name], device=self.device).contiguous()
             if -1 in tuple(self.engine.get_binding_shape(index)):
-                self.context.set_binding_shape(index, tuple(tensor.shape))
+                _require_trt_success(
+                    self.context.set_binding_shape(index, tuple(tensor.shape)),
+                    f"set_binding_shape({name})",
+                )
             buffers[name] = tensor
             addresses[index] = int(tensor.data_ptr())
         for name in self.output_names:
@@ -210,3 +216,8 @@ def _torch_dtype(numpy_dtype: Any, torch: Any) -> Any:
     if dtype is None:
         raise TypeError(f"unsupported TensorRT tensor dtype: {numpy_dtype}")
     return dtype
+
+
+def _require_trt_success(result: Any, operation: str) -> None:
+    if result is not True:
+        raise RuntimeError(f"TensorRT {operation} failed")

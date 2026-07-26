@@ -44,7 +44,7 @@ class TargetRanker:
     def rank(self, candidates: list[CandidateScores]) -> list[CandidateScores]:
         valid_candidates = [candidate for candidate in candidates if candidate.valid]
         scores = [self.score(candidate) for candidate in valid_candidates]
-        for candidate, score in zip(valid_candidates, scores, strict=True):
+        for candidate, score in zip(valid_candidates, scores):
             candidate.target_score = score
         return sorted(valid_candidates, key=lambda item: item.target_score, reverse=True)
 

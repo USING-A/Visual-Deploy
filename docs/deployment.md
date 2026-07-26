@@ -142,7 +142,9 @@ ls -lh weights/*.engine
 ```
 
 The script builds static-batch FP16 engines from the checked-in ONNX files and
-fails if `trtexec` does not produce a non-empty file. TensorRT 10 supports the
+fails if `trtexec` does not produce a non-empty file. Each engine is built to a
+temporary sibling and atomically replaces the final path only after validation,
+so an interrupted build preserves the previous engine. TensorRT 10 supports the
 used `--fp16` build flag. If the platform is later upgraded to TensorRT 11, use
 NVIDIA's strongly typed mixed-precision ONNX flow instead of this flag.
 
@@ -265,6 +267,17 @@ runs/thread_profiles/thread_profile_<UTC timestamp>/
   report.md
   pipeline_runs/<run>/timings.jsonl
 ```
+
+Collector exit status is fail-closed:
+
+| Status | Exit code | Meaning |
+|---|---:|---|
+| `complete` | 0 | requested frames and required telemetry were collected |
+| `child_failed` | child code | deployment process failed |
+| `invalid_output` | 2 | timing file is missing, empty, or has the wrong frame count |
+| `incomplete_telemetry` | 3 | requested tegrastats sampling failed or exited early |
+| `timed_out` | 124 | collection exceeded `--timeout-s` |
+| `interrupted` | 130 | user interrupted collection |
 
 The summary reports mean, minimum, P50, P95, P99, maximum, pipeline FPS measured
 between completed frames, and end-to-end collection FPS including model startup. The
