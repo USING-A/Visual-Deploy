@@ -101,3 +101,22 @@ Promote the full device deployment to 95% Go only when all conditions hold:
 5. P95 latency, frame age, temperature, power, and valid-target rate meet the
    application acceptance thresholds defined for the robot test;
 6. no orphan process, unbounded queue growth, or repeated safety rejection is present.
+
+## Grasp-search integration addendum
+
+The validated Top-K 256 coarse-to-fine grasp search was integrated after the
+initial audit. It preserves all-target processing, retries exhaustive search when
+the pruned set has no accepted candidate, and provides an optional authoritative
+exhaustive shadow check for commissioning.
+
+The paired four-detection real-ONNX profile retained the exact target and changed:
+
+| Metric | Exhaustive selector | Top-K 256 integration |
+|---|---:|---:|
+| Mean grasp latency | 247.74 ms | 61.54 ms |
+| Mean total latency | 361.11 ms | 202.38 ms |
+| Effective throughput | 2.75 FPS | 4.95 FPS |
+
+The shadow probe evaluated all four detected targets, reported exact pixel, depth,
+and normal agreement, and returned the exhaustive result. This remains local CPU
+evidence rather than final Orin NX acceptance evidence.

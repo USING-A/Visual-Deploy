@@ -35,6 +35,9 @@ def test_load_default_config_has_runtime_sections():
     assert cfg["tracking"]["min_hits"] == 1
     assert cfg["segmentation"]["depth_input_unit"] == "mm"
     assert cfg["safety"]["enabled"] is True
+    assert cfg["grasp"]["candidate_top_k"] == 256
+    assert cfg["grasp"]["exhaustive_fallback"] is True
+    assert cfg["grasp"]["shadow_verify_every_n_frames"] == 0
 
 
 def test_cpu_config_preserves_production_safety_and_temporal_contracts():
@@ -43,6 +46,7 @@ def test_cpu_config_preserves_production_safety_and_temporal_contracts():
 
     assert cpu["tracking"] == production["tracking"]
     assert cpu["depth_fusion"] == production["depth_fusion"]
+    assert cpu["grasp"] == production["grasp"]
     assert cpu["safety"] == production["safety"]
     assert cpu["profiling"] == production["profiling"]
     assert cpu["debug"] == production["debug"]

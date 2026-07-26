@@ -55,6 +55,11 @@ class OfflinePipeline:
         self.ranker = TargetRanker(weights=self.config.get("ranking", {}).get("weights"))
         self.safety_validator = TargetSafetyValidator.from_config(self.config.get("safety"))
         self.continuity_validator = TargetContinuityValidator.from_config(self.config.get("safety"))
+        grasp_cfg = self.config.get("grasp", {})
+        shadow_interval = grasp_cfg.get("shadow_verify_every_n_frames", 0)
+        if isinstance(shadow_interval, bool) or not isinstance(shadow_interval, int) or shadow_interval < 0:
+            raise ValueError("grasp.shadow_verify_every_n_frames must be a non-negative integer")
+        self.grasp_shadow_verify_every_n_frames = shadow_interval
         self.last_debug: DebugSnapshot | None = None
         self.debug_enabled = bool(self.config.get("debug", {}).get("enabled", False))
         self.timing_enabled = bool(self.config.get("profiling", {}).get("enabled", False))
@@ -243,21 +248,26 @@ class OfflinePipeline:
                 threshold=1.0,
             )
         stage_started = perf_counter()
+        grasp_cfg = _pick(
+            self.config.get("grasp", {}),
+            "patch_radius_px",
+            "stride_px",
+            "min_component_area_px",
+            "min_valid_depth_ratio",
+            "min_valid_depth_count",
+            "max_plane_rmse_m",
+            "max_depth_mad_m",
+            "min_score",
+            "candidate_top_k",
+            "exhaustive_fallback",
+        )
+        shadow_interval = self.grasp_shadow_verify_every_n_frames
         patch = select_grasp_patch(
             segment.mask_256,
             fused.depth_roi_mm,
             roi.adjust_intrinsics(frame.intrinsics),
-            **_pick(
-                self.config.get("grasp", {}),
-                "patch_radius_px",
-                "stride_px",
-                "min_component_area_px",
-                "min_valid_depth_ratio",
-                "min_valid_depth_count",
-                "max_plane_rmse_m",
-                "max_depth_mad_m",
-                "min_score",
-            ),
+            shadow_verify=shadow_interval > 0 and frame.frame_id % shadow_interval == 0,
+            **grasp_cfg,
         )
         timings["grasp_ms"] += _elapsed_ms(stage_started)
         if patch is None:
@@ -403,6 +413,17 @@ class _PipelineCandidate:
                 "plane_rmse_m": self.patch.plane_rmse_m,
                 "depth_mad_m": self.patch.depth_mad_m,
                 "normal_xyz": [float(value) for value in self.patch.normal_xyz],
+                "search": {
+                    "mode": self.patch.search_mode,
+                    "eligible_candidate_count": self.patch.eligible_candidate_count,
+                    "fine_candidate_count": self.patch.fine_candidate_count,
+                    "fallback_used": self.patch.fallback_used,
+                    "shadow_verified": self.patch.shadow_verified,
+                    "shadow_exact_match": self.patch.shadow_exact_match,
+                    "shadow_pixel_delta_px": self.patch.shadow_pixel_delta_px,
+                    "shadow_depth_delta_mm": self.patch.shadow_depth_delta_mm,
+                    "shadow_normal_delta_deg": self.patch.shadow_normal_delta_deg,
+                },
             },
             "depth_fusion": {
                 "valid_ratio": self.depth.valid_ratio,

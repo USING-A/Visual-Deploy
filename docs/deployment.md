@@ -286,6 +286,37 @@ pressure/drops, and Jetson CPU/GPU saturation. Preserve raw files when comparing
 two implementations; the generated recommendation text is not a substitute for
 paired measurements from the same scene, power mode, and model engines.
 
+### 7.1 Grasp-search commissioning
+
+The default grasp selector evaluates full geometry for the best 256 candidates
+after deterministic cheap pre-ranking. It does not limit the number of detected
+targets. The controls are:
+
+```yaml
+grasp:
+  candidate_top_k: 256
+  exhaustive_fallback: true
+  shadow_verify_every_n_frames: 0
+```
+
+- `candidate_top_k: null` restores exhaustive search.
+- `exhaustive_fallback: true` retries exhaustive search if the pruned set has no
+  accepted candidate.
+- `shadow_verify_every_n_frames: N` runs an authoritative exhaustive search every
+  N frames. Keep it `0` for normal production and use `30` during device
+  commissioning.
+
+When candidate recording is enabled, `grasp.search` contains the search mode,
+eligible and fine-evaluated counts, fallback state, and shadow pixel/depth/normal
+deltas. A shadow frame returns the exhaustive result, so validation cannot replace
+the authoritative result with a mismatching Top-K result.
+
+Local CPU evidence on 2026-07-26 preserved the exact final target while reducing
+the four-target grasp mean from 247.74 ms to 61.54 ms. Total mean latency changed
+from 361.11 ms to 202.38 ms and effective throughput from 2.75 to 4.95 FPS. These
+numbers validate the code path only; repeat the standard 900-frame profile with
+real aligned D435i depth on the final Orin NX.
+
 ## 8. Threading acceptance data
 
 Before implementing threads, collect at least:

@@ -126,6 +126,25 @@ Enable `recording.enabled` plus only the channels needed for a specific test.
 `profiling.enabled` adds `timings.jsonl`; `diagnostics.enabled` permits configured
 safety/continuity events and artifacts.
 
+## Grasp candidate search
+
+Deployment uses a deterministic coarse-to-fine search that pre-ranks candidates
+with existing low-cost depth-support, boundary, and centroid terms, then runs the
+full float64 plane, median, MAD, and final-score calculation on the best 256:
+
+```yaml
+grasp:
+  candidate_top_k: 256
+  exhaustive_fallback: true
+  shadow_verify_every_n_frames: 0
+```
+
+Set `candidate_top_k: null` for exhaustive search. With fallback enabled, an
+empty or below-score Top-K result is retried exhaustively before the frame is
+rejected. Shadow verification is off in production; set its interval to `30`
+during commissioning to return the exhaustive result periodically and record
+pixel, depth, normal, and exact-match evidence in `candidates.jsonl`.
+
 ## Automated threading profile collection
 
 The collector creates a temporary timing-only config, runs the existing offline
@@ -187,7 +206,7 @@ stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md)
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current verified result: `196 passed`.
+Current verified result: `208 passed`.
 
 The release-confidence evidence and the mandatory Jetson device acceptance gate
 are recorded in

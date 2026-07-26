@@ -81,6 +81,99 @@ def test_vectorized_candidates_preserve_tilted_surface_reference():
     assert out.score == pytest.approx(0.994865013, abs=2e-5)
 
 
+def test_topk256_preserves_exhaustive_tilted_surface_and_reports_work():
+    yy, xx = np.ogrid[:256, :256]
+    mask = ((xx - 128) ** 2 / 85**2 + (yy - 126) ** 2 / 70**2) <= 1
+    depth = (
+        850.0
+        + 0.08 * (np.arange(256)[None, :] - 128)
+        + 0.05 * (np.arange(256)[:, None] - 126)
+        + 1.5 * np.sin(np.arange(256)[None, :] / 19)
+    ).astype(np.float32)
+    depth[~mask] = np.nan
+    intr = CameraIntrinsics(fx=580.0, fy=582.0, ppx=128.0, ppy=126.0, depth_scale=0.001)
+
+    exhaustive = select_grasp_patch(mask, depth, intr)
+    topk = select_grasp_patch(mask, depth, intr, candidate_top_k=256)
+
+    assert exhaustive is not None and topk is not None
+    assert (topk.u_px, topk.v_px, topk.z_m, topk.score) == (
+        exhaustive.u_px,
+        exhaustive.v_px,
+        exhaustive.z_m,
+        exhaustive.score,
+    )
+    np.testing.assert_allclose(topk.normal_xyz, exhaustive.normal_xyz, atol=3e-5)
+    assert topk.search_mode == "topk"
+    assert topk.eligible_candidate_count == 950
+    assert topk.fine_candidate_count == 256
+    assert topk.fallback_used is False
+
+
+def test_topk_falls_back_to_exhaustive_when_pruned_patch_fails_geometry():
+    mask = np.zeros((96, 96), dtype=bool)
+    yy, xx = np.ogrid[:96, :96]
+    mask[(yy - 48) ** 2 + (xx - 48) ** 2 <= 35**2] = True
+    depth = np.full((96, 96), 800.0, dtype=np.float32)
+    rng = np.random.default_rng(3)
+    depth[38:59, 38:59] += rng.normal(0.0, 40.0, (21, 21)).astype(np.float32)
+    intr = CameraIntrinsics(fx=420.0, fy=425.0, ppx=48.0, ppy=47.0, depth_scale=0.001)
+
+    pruned = select_grasp_patch(mask, depth, intr, patch_radius_px=5, stride_px=4, candidate_top_k=1, exhaustive_fallback=False)
+    recovered = select_grasp_patch(mask, depth, intr, patch_radius_px=5, stride_px=4, candidate_top_k=1, exhaustive_fallback=True)
+
+    assert pruned is None
+    assert recovered is not None
+    assert recovered.search_mode == "topk_fallback_exhaustive"
+    assert recovered.fallback_used is True
+    assert recovered.fine_candidate_count == recovered.eligible_candidate_count + 1
+
+
+def test_shadow_verification_returns_exhaustive_authority_and_records_miss():
+    mask = np.zeros((96, 96), dtype=bool)
+    yy, xx = np.ogrid[:96, :96]
+    mask[(yy - 48) ** 2 + (xx - 48) ** 2 <= 35**2] = True
+    depth = np.full((96, 96), 800.0, dtype=np.float32)
+    rng = np.random.default_rng(3)
+    depth[38:59, 38:59] += rng.normal(0.0, 40.0, (21, 21)).astype(np.float32)
+    intr = CameraIntrinsics(fx=420.0, fy=425.0, ppx=48.0, ppy=47.0, depth_scale=0.001)
+
+    out = select_grasp_patch(
+        mask,
+        depth,
+        intr,
+        patch_radius_px=5,
+        stride_px=4,
+        candidate_top_k=1,
+        exhaustive_fallback=False,
+        shadow_verify=True,
+    )
+
+    assert out is not None
+    assert out.search_mode == "topk_shadow_exhaustive"
+    assert out.shadow_verified is True
+    assert out.shadow_exact_match is False
+    assert out.fallback_used is True
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True])
+def test_candidate_top_k_rejects_invalid_values(value):
+    mask = np.ones((32, 32), dtype=bool)
+    depth = np.full((32, 32), 800.0, dtype=np.float32)
+    intr = CameraIntrinsics(fx=100.0, fy=100.0, ppx=16.0, ppy=16.0, depth_scale=0.001)
+    with pytest.raises(ValueError, match="candidate_top_k"):
+        select_grasp_patch(mask, depth, intr, patch_radius_px=4, candidate_top_k=value)
+
+
+@pytest.mark.parametrize("name", ["exhaustive_fallback", "shadow_verify"])
+def test_grasp_search_switches_require_booleans(name):
+    mask = np.ones((32, 32), dtype=bool)
+    depth = np.full((32, 32), 800.0, dtype=np.float32)
+    intr = CameraIntrinsics(fx=100.0, fy=100.0, ppx=16.0, ppy=16.0, depth_scale=0.001)
+    with pytest.raises(ValueError, match=name):
+        select_grasp_patch(mask, depth, intr, patch_radius_px=4, **{name: "false"})
+
+
 @pytest.mark.parametrize("seed", [2, 7, 19])
 def test_vectorized_selector_matches_scalar_reference_on_noisy_depth(seed):
     rng = np.random.default_rng(seed)

@@ -51,6 +51,9 @@ grasp:
   max_plane_rmse_m: 0.006
   max_depth_mad_m: 0.012
   min_score: 0.0
+  candidate_top_k: 256
+  exhaustive_fallback: true
+  shadow_verify_every_n_frames: 0
 
 ranking:
   weights:

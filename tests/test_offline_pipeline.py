@@ -88,6 +88,7 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
         segmentor=MockSegmentor(),
         config={
             "profiling": {"enabled": True},
+            "grasp": {"candidate_top_k": 256},
             "recording": {"enabled": True, "save_candidates": True, "save_timings": True, "output_root": str(tmp_path)},
         },
     )
@@ -102,6 +103,9 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
     assert candidate["rank"] == 1
     assert candidate["selected"] is True
     assert candidate["safety"]["valid"] is True
+    assert candidate["grasp"]["search"]["mode"] == "topk"
+    assert candidate["grasp"]["search"]["eligible_candidate_count"] > 256
+    assert candidate["grasp"]["search"]["fine_candidate_count"] == 256
     timing = json.loads((run_dir / "timings.jsonl").read_text(encoding="utf-8").strip())
     assert timing["valid_target"] is True
     assert timing["detection_ms"] >= 0.0
@@ -262,3 +266,13 @@ def test_pipeline_debug_and_recording_are_off_by_default(tmp_path):
     pipeline.process_frame(_frame())
     assert pipeline.last_debug is None
     assert not pipeline.recorder.run_dir.exists()
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True])
+def test_pipeline_rejects_invalid_grasp_shadow_interval(value):
+    with pytest.raises(ValueError, match="shadow_verify_every_n_frames"):
+        OfflinePipeline(
+            MockDetector(0.9),
+            MockSegmentor(),
+            config={"grasp": {"shadow_verify_every_n_frames": value}},
+        )

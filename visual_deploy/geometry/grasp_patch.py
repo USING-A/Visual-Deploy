@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -21,6 +21,15 @@ class GraspPatch:
     depth_mad_m: float
     boundary_distance_px: float
     component_area_px: int
+    eligible_candidate_count: int = 0
+    fine_candidate_count: int = 0
+    search_mode: str = "exhaustive"
+    fallback_used: bool = False
+    shadow_verified: bool = False
+    shadow_exact_match: bool | None = None
+    shadow_pixel_delta_px: float | None = None
+    shadow_depth_delta_mm: float | None = None
+    shadow_normal_delta_deg: float | None = None
 
 
 def _validate_inputs(mask: np.ndarray, depth_mm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -138,7 +147,8 @@ def _iter_patch_candidates(
     min_boundary_distance_px: float | None,
     max_plane_rmse_m: float,
     max_depth_mad_m: float,
-) -> list[GraspPatch]:
+    candidate_top_k: int | None,
+) -> tuple[list[GraspPatch], int, int]:
     mask_arr, depth_arr = _validate_inputs(mask, depth_mm)
     _validate_intrinsics(intr)
     if patch_radius_px <= 0 or stride_px <= 0:
@@ -147,7 +157,7 @@ def _iter_patch_candidates(
     component = _largest_component(mask_arr)
     component_area = int(component.sum())
     if component_area < int(min_component_area_px):
-        return []
+        return [], 0, 0
 
     dist = _chamfer_distance_to_background(component)
     ys, xs = np.nonzero(component)
@@ -179,7 +189,7 @@ def _iter_patch_candidates(
     )
     center_ys, center_xs = center_ys[eligible], center_xs[eligible]
     if center_ys.size == 0:
-        return []
+        return [], 0, 0
 
     size = 2 * rr + 1
     component_windows = np.lib.stride_tricks.sliding_window_view(component, (size, size))[
@@ -195,7 +205,7 @@ def _iter_patch_candidates(
         patch_areas[keep],
     )
     if center_ys.size == 0:
-        return []
+        return [], 0, 0
 
     depth_windows = np.lib.stride_tricks.sliding_window_view(depth_arr, (size, size))[
         center_ys - rr, center_xs - rr
@@ -214,7 +224,30 @@ def _iter_patch_candidates(
         valid_ratios[keep],
     )
     if center_ys.size == 0:
-        return []
+        return [], 0, 0
+
+    eligible_candidate_count = int(center_ys.size)
+    boundary_distances = dist[center_ys, center_xs].astype(np.float32, copy=False)
+    centroid_distances = np.hypot(center_ys - centroid_y, center_xs - centroid_x).astype(np.float32, copy=False)
+    boundary_scores = np.minimum(boundary_distances / max(float(rr) * 2.0, 1.0), 1.0)
+    centroid_scores = np.maximum(0.0, 1.0 - centroid_distances / max(max_centroid_distance, 1.0))
+    cheap_scores = 0.35 * valid_ratios + 0.30 * boundary_scores + 0.05 * centroid_scores
+    if candidate_top_k is not None and eligible_candidate_count > candidate_top_k:
+        order = np.lexsort((np.arange(eligible_candidate_count), -cheap_scores))[:candidate_top_k]
+        center_ys, center_xs, patch_areas, depth_windows, valid, valid_counts, valid_ratios = (
+            center_ys[order],
+            center_xs[order],
+            patch_areas[order],
+            depth_windows[order],
+            valid[order],
+            valid_counts[order],
+            valid_ratios[order],
+        )
+        boundary_distances = boundary_distances[order]
+        centroid_distances = centroid_distances[order]
+        boundary_scores = boundary_scores[order]
+        centroid_scores = centroid_scores[order]
+    fine_candidate_count = int(center_ys.size)
 
     offsets = np.arange(-rr, rr + 1, dtype=np.float32)
     pixel_x = center_xs[:, None, None].astype(np.float32) + offsets[None, None, :]
@@ -248,12 +281,12 @@ def _iter_patch_candidates(
         depth_mad[keep],
     )
     if center_ys.size == 0:
-        return []
+        return [], eligible_candidate_count, fine_candidate_count
 
-    boundary_distances = dist[center_ys, center_xs].astype(np.float32, copy=False)
-    centroid_distances = np.hypot(center_ys - centroid_y, center_xs - centroid_x).astype(np.float32, copy=False)
-    boundary_scores = np.minimum(boundary_distances / max(float(rr) * 2.0, 1.0), 1.0)
-    centroid_scores = np.maximum(0.0, 1.0 - centroid_distances / max(max_centroid_distance, 1.0))
+    boundary_distances = boundary_distances[keep]
+    centroid_distances = centroid_distances[keep]
+    boundary_scores = boundary_scores[keep]
+    centroid_scores = centroid_scores[keep]
     plane_scores = np.maximum(0.0, 1.0 - plane_rmse / max(max_plane_rmse_m, 1e-9))
     mad_scores = np.maximum(0.0, 1.0 - depth_mad / max(max_depth_mad_m, 1e-9))
     support_scores = np.minimum(valid_counts / np.maximum(patch_areas.astype(np.float32), 1.0), 1.0)
@@ -280,7 +313,7 @@ def _iter_patch_candidates(
             boundary_distance_px=float(boundary_distances[index]),
             component_area_px=component_area,
         )
-    ]
+    ], eligible_candidate_count, fine_candidate_count
 
 
 def select_grasp_patch(
@@ -297,9 +330,15 @@ def select_grasp_patch(
     min_score: float = 0.0,
     max_plane_rmse_m: float = 0.006,
     max_depth_mad_m: float = 0.012,
+    candidate_top_k: int | None = None,
+    exhaustive_fallback: bool = True,
+    shadow_verify: bool = False,
 ) -> GraspPatch | None:
     _validate_intrinsics(intr)
-    candidates = _iter_patch_candidates(
+    top_k = _validate_candidate_top_k(candidate_top_k)
+    fallback_enabled = _validate_bool(exhaustive_fallback, "exhaustive_fallback")
+    shadow_enabled = _validate_bool(shadow_verify, "shadow_verify")
+    candidates, eligible_count, fine_count = _iter_patch_candidates(
         mask,
         depth_mm,
         intr,
@@ -311,11 +350,103 @@ def select_grasp_patch(
         min_boundary_distance_px,
         max_plane_rmse_m,
         max_depth_mad_m,
+        top_k,
     )
-    if not candidates:
+    best = _accepted_best(candidates, min_score)
+    topk_best = best
+    fallback_used = False
+    exhaustive_best: GraspPatch | None = None
+    exhaustive_fine_count = 0
+    if top_k is not None and ((best is None and fallback_enabled) or shadow_enabled):
+        exhaustive, exhaustive_eligible_count, exhaustive_fine_count = _iter_patch_candidates(
+            mask,
+            depth_mm,
+            intr,
+            patch_radius_px,
+            stride_px,
+            min_component_area_px,
+            min_valid_depth_ratio,
+            min_valid_depth_count,
+            min_boundary_distance_px,
+            max_plane_rmse_m,
+            max_depth_mad_m,
+            None,
+        )
+        eligible_count = max(eligible_count, exhaustive_eligible_count)
+        exhaustive_best = _accepted_best(exhaustive, min_score)
+        if best is None and fallback_enabled:
+            best = exhaustive_best
+            fallback_used = best is not None
+    if shadow_enabled and exhaustive_best is not None:
+        comparison = (
+            _compare_patches(topk_best, exhaustive_best)
+            if topk_best is not None
+            else {
+                "shadow_exact_match": False,
+                "shadow_pixel_delta_px": None,
+                "shadow_depth_delta_mm": None,
+                "shadow_normal_delta_deg": None,
+            }
+        )
+        return replace(
+            exhaustive_best,
+            eligible_candidate_count=eligible_count,
+            fine_candidate_count=fine_count + exhaustive_fine_count,
+            search_mode="topk_shadow_exhaustive",
+            fallback_used=topk_best is None,
+            shadow_verified=True,
+            **comparison,
+        )
+    if best is None:
         return None
 
-    best = max(candidates, key=lambda candidate: candidate.score)
-    if best.score < float(min_score):
+    if top_k is None:
+        return replace(
+            best,
+            eligible_candidate_count=eligible_count,
+            fine_candidate_count=fine_count,
+            search_mode="exhaustive",
+        )
+    return replace(
+        best,
+        eligible_candidate_count=eligible_count,
+        fine_candidate_count=fine_count + (exhaustive_fine_count if fallback_used else 0),
+        search_mode="topk_fallback_exhaustive" if fallback_used else "topk",
+        fallback_used=fallback_used,
+        shadow_verified=shadow_enabled,
+        shadow_exact_match=False if shadow_enabled else None,
+    )
+
+
+def _accepted_best(candidates: list[GraspPatch], min_score: float) -> GraspPatch | None:
+    if not candidates:
         return None
-    return best
+    best = max(candidates, key=lambda candidate: candidate.score)
+    return best if best.score >= float(min_score) else None
+
+
+def _validate_candidate_top_k(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or int(value) <= 0:
+        raise ValueError("candidate_top_k must be a positive integer or null")
+    return int(value)
+
+
+def _validate_bool(value: bool, name: str) -> bool:
+    if not isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a boolean")
+    return bool(value)
+
+
+def _compare_patches(candidate: GraspPatch, exhaustive: GraspPatch) -> dict[str, float | bool]:
+    pixel_delta = float(np.hypot(candidate.u_px - exhaustive.u_px, candidate.v_px - exhaustive.v_px))
+    depth_delta_mm = abs(float(candidate.z_m) - float(exhaustive.z_m)) * 1000.0
+    dot = float(np.clip(np.dot(candidate.normal_xyz, exhaustive.normal_xyz), -1.0, 1.0))
+    normal_delta_deg = float(np.degrees(np.arccos(dot)))
+    return {
+        "shadow_exact_match": pixel_delta == 0.0 and depth_delta_mm <= 1e-6,
+        "shadow_pixel_delta_px": pixel_delta,
+        "shadow_depth_delta_mm": depth_delta_mm,
+        "shadow_normal_delta_deg": normal_delta_deg,
+    }
