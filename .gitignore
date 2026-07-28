@@ -6,3 +6,6 @@ __pycache__/
 *.pyc
 runs/
 *.egg-info
+.planning/
+work_dirs/
+outputs/
