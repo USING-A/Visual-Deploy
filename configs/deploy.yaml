@@ -8,8 +8,8 @@ camera:
   hole_filling_filter: false
 
 detection:
-  weights: weights/yolov10_sam_robust_standard.onnx
-  backend: onnxruntime
+  weights: weights/yolov10_sam_robust_standard.engine
+  backend: tensorrt
   image_size: 640
   class_names: {0: apple}
   conf_threshold: 0.50
@@ -27,8 +27,8 @@ roi:
   pad_ratio: 0.20
 
 segmentation:
-  weights: weights/rgbd_gcnet_l03_robustft.onnx
-  backend: onnxruntime
+  weights: weights/rgbd_gcnet_l03_robustft.engine
+  backend: tensorrt
   threshold: 0.5
   device: cuda:0
   input_color_order: bgr
