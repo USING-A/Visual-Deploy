@@ -351,6 +351,121 @@ The generated summary also includes workload counts, including detections,
 confirmed tracks, segmentation calls, grasp searches, candidates, and rejections.
 Use these counts to distinguish full-workload frames from cheap empty frames.
 
+### 8.1 Exact Jetson comparison procedure
+
+Use one available camera scene. Broad scene coverage is not required for this
+lightweight deployment check, but do not move the camera or target between the two
+short runs.
+
+1. Confirm that the production engines and camera are available:
+
+   ```bash
+   test -f weights/yolov10_sam_robust_standard.engine
+   test -f weights/rgbd_gcnet_l03_robustft.engine
+   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_capability())"
+   ```
+
+2. Record the device state before each run:
+
+   ```bash
+   sudo nvpmodel -q --verbose
+   sudo jetson_clocks --show
+   free -h
+   ```
+
+3. Collect the default capacity-one latest-frame run:
+
+   ```bash
+   python scripts/collect_thread_profile.py \
+     --mode realtime \
+     --config configs/deploy.yaml \
+     --frames 300 \
+     --warmup-frames 20 \
+     --session-name threaded_300
+   ```
+
+4. Collect the legacy synchronous run with the same script and scene:
+
+   ```bash
+   python scripts/collect_thread_profile.py \
+     --mode realtime \
+     --config configs/deploy.yaml \
+     --frames 300 \
+     --warmup-frames 20 \
+     --session-name sync_300 \
+     --sync
+   ```
+
+5. Read both `summary.json` files. Compare:
+
+   - `effective_fps` and `collection_fps_including_startup`;
+   - `valid_target_rate`;
+   - `timings.total_ms` and `timings.frame_age_ms`;
+   - `timings.queue_wait_ms.capture_to_inference`;
+   - `timings.queue_capacity.capture_to_inference`;
+   - `timings.dropped_frames.capture_to_inference`;
+   - `timings.workload.confirmed_tracks` and segmentation/grasp workload counts;
+   - process RSS, system RAM/swap, GPU utilization, temperature, and input power.
+
+The threaded run is acceptable when it completes all requested processed frames,
+queue capacity remains one, memory does not grow continuously, targets remain
+usable, and throughput is not worse than the synchronous run. A high drop count is
+normal when the camera produces 30 FPS but perception processes only about 11 FPS.
+
+### 8.2 Why the threading uplift is deliberately limited
+
+The representative high-valid TensorRT report measured approximately:
+
+| Stage | Mean |
+|---|---:|
+| Capture | 16.06 ms |
+| Detection | 22.95 ms |
+| Depth fusion | 29.74 ms |
+| Segmentation | 10.95 ms |
+| Grasp selection | 18.30 ms |
+| Perception total | 84.71 ms |
+
+The old loop performs capture and perception sequentially, so its approximate
+cycle is `16.06 + 84.71 = 100.77 ms`, close to the measured 9.83 FPS. The new
+runner can overlap capture with perception, but the best possible cycle is still
+approximately `max(16.06, 84.71) = 84.71 ms`, or about 11.8 FPS. This places the
+ideal threading-only uplift near 20%.
+
+Most perception stages cannot be freely overlapped:
+
+- detection must finish before tracking and ROI construction;
+- ROI/depth fusion must finish before GCNet segmentation;
+- segmentation must finish before grasp geometry and safety validation;
+- YOLO and GCNet share one GPU, whose measured P95 utilization was already 87.2%,
+  so they remain serialized;
+- recording averaged only about 0.2 ms, so moving it to another thread has almost
+  no performance value;
+- dropping stale frames controls age and memory, but it does not reduce the cost
+  of a processed frame.
+
+The accepted depth-history cache reduces repeated CPU preparation, but its local
+microbenchmark gain was 8.3% within the depth-fusion stage, not 8.3% across the
+whole pipeline. Larger gains require TensorRT buffer reuse and further depth-fusion
+work rather than additional general-purpose threads.
+
+### 8.3 Expected result and next optimization order
+
+For the current engines, expect approximately 10.5 to 12 FPS, a bounded queue,
+and intentional stale-frame drops. Frame age may remain around 95 to 120 ms because
+it still contains the roughly 85 ms perception service time plus a short queue wait.
+
+Continue in this order after the device comparison:
+
+1. remove the Orin compute-capability warning with the JetPack-matched PyTorch build;
+2. reuse TensorRT input/output CUDA buffers and narrow stream synchronization;
+3. reduce depth remap/median allocation cost while preserving exact grasp output;
+4. use workload counts to decide whether multi-target prioritization is necessary;
+5. evaluate INT8 or dynamic batching only as a separate accuracy-gated experiment.
+
+Do not add more CPU threads merely to increase the thread count. Tracker and depth
+history must keep one writer, and the two GPU models should remain serialized until
+device profiling proves that safe overlap exists.
+
 ## 9. Safety boundary
 
 The visual runtime fails closed on invalid depth, segmentation, grasp geometry,

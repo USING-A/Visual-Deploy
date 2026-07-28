@@ -248,7 +248,7 @@ def _build_profile_config(config: dict[str, Any], config_path: Path, session_dir
 
 def _build_child_command(args: argparse.Namespace, config_path: Path) -> list[str]:
     if args.mode == "realtime":
-        return [
+        command = [
             str(args.python),
             str(PROJECT_ROOT / "scripts" / "run_realtime.py"),
             "--config",
@@ -256,6 +256,9 @@ def _build_child_command(args: argparse.Namespace, config_path: Path) -> list[st
             "--max-frames",
             str(args.frames),
         ]
+        if bool(getattr(args, "sync", False)):
+            command.append("--sync")
+        return command
     missing = [name for name in ("rgb", "depth", "fx", "fy", "ppx", "ppy") if getattr(args, name) is None]
     if missing:
         raise ValueError(f"offline mode requires: {', '.join('--' + name for name in missing)}")
@@ -367,6 +370,8 @@ def _validate_collection_args(args: argparse.Namespace) -> None:
         raise ValueError("sample_interval_ms must be positive")
     if args.timeout_s is not None and float(args.timeout_s) <= 0.0:
         raise ValueError("timeout_s must be positive")
+    if bool(getattr(args, "sync", False)) and args.mode != "realtime":
+        raise ValueError("sync comparison is available only in realtime mode")
 
 
 def _determine_profile_status(
@@ -399,6 +404,7 @@ def _parse_args() -> argparse.Namespace:
         description="Collect deployment timing/resources and generate threading optimization reports."
     )
     parser.add_argument("--mode", choices=("realtime", "offline"), default="realtime")
+    parser.add_argument("--sync", action="store_true", help="Use the legacy synchronous realtime loop for comparison.")
     parser.add_argument("--config", default="configs/deploy.yaml")
     parser.add_argument("--frames", type=_positive_int, default=300)
     parser.add_argument("--warmup-frames", type=int, default=20)

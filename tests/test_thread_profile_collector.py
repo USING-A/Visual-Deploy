@@ -58,6 +58,15 @@ def test_build_offline_command_requires_all_rgbd_arguments(tmp_path):
         COLLECTOR._build_child_command(args, tmp_path / "profile.yaml")
 
 
+def test_build_realtime_command_supports_synchronous_comparison(tmp_path):
+    args = argparse.Namespace(mode="realtime", python="python", frames=30, sync=True)
+
+    command = COLLECTOR._build_child_command(args, tmp_path / "profile.yaml")
+
+    assert command[-1] == "--sync"
+    assert "run_realtime.py" in command[1]
+
+
 def test_tegrastats_resolution_supports_off_and_explicit_executable(tmp_path):
     assert COLLECTOR._resolve_tegrastats("off", 250) is None
     executable = tmp_path / "tegrastats"
@@ -147,6 +156,16 @@ def test_profile_status_fails_closed_for_incomplete_runs(overrides, expected):
 
 
 def test_collection_args_reject_warmup_that_consumes_the_run():
-    args = argparse.Namespace(frames=10, warmup_frames=10, sample_interval_ms=1000, timeout_s=None)
+    args = argparse.Namespace(
+        mode="realtime", frames=10, warmup_frames=10, sample_interval_ms=1000, timeout_s=None, sync=False
+    )
     with pytest.raises(ValueError, match="smaller than frames"):
+        COLLECTOR._validate_collection_args(args)
+
+
+def test_collection_args_reject_sync_for_offline_mode():
+    args = argparse.Namespace(
+        mode="offline", frames=10, warmup_frames=1, sample_interval_ms=1000, timeout_s=None, sync=True
+    )
+    with pytest.raises(ValueError, match="realtime"):
         COLLECTOR._validate_collection_args(args)

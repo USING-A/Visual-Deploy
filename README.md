@@ -172,7 +172,17 @@ Jetson/realtime example:
 ```bash
 python scripts/collect_thread_profile.py \
   --mode realtime --config configs/deploy.yaml \
-  --frames 900 --warmup-frames 60
+  --frames 300 --warmup-frames 20 \
+  --session-name threaded_300
+```
+
+Use the same collector with `--sync` for a directly comparable legacy run:
+
+```bash
+python scripts/collect_thread_profile.py \
+  --mode realtime --config configs/deploy.yaml \
+  --frames 300 --warmup-frames 20 \
+  --session-name sync_300 --sync
 ```
 
 Each session is created under `runs/thread_profiles/` and contains `report.md`,
@@ -180,6 +190,14 @@ Each session is created under `runs/thread_profiles/` and contains `report.md`,
 generated config, and the pipeline `timings.jsonl`. Realtime runs populate the
 capacity-one capture queue wait/depth/drop fields; offline runs leave queue fields
 empty. `configs/deploy.yaml` is the Jetson/TensorRT production config.
+
+Threading overlaps only camera capture with the still-serialized perception
+pipeline. In the representative Orin report, capture was about 16 ms and
+perception was about 85 ms, so the synchronous cycle was roughly 101 ms while
+the ideal overlapped cycle remains about 85 ms. The corresponding upper bound is
+approximately 9.9 to 11.8 FPS, not 30 FPS. The capacity-one queue is primarily a
+freshness and bounded-memory feature; dropped stale frames do not make YOLO,
+depth fusion, GCNet, or grasp geometry execute faster.
 
 Incomplete timing, child failure, timeout, interruption, or a failed requested
 tegrastats stream returns a typed nonzero exit status and remains recorded in
@@ -212,7 +230,7 @@ stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md)
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current verified result: `210 passed`.
+Current verified result: `212 passed`.
 
 The release-confidence evidence and the mandatory Jetson device acceptance gate
 are recorded in
