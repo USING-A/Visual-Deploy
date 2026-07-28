@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from functools import lru_cache
 import warnings
 
 import cv2
@@ -90,27 +91,24 @@ class DepthFusionBuffer:
             history.clear()
             history.extend(compatible)
 
+        current_valid = self._valid_depth(depth)
         history.append(
             _DepthEntry(
                 frame_id=frame_id,
                 timestamp_ms=timestamp,
                 roi_transform=roi_transform,
-                depth_roi_mm=depth.copy(),
+                depth_roi_mm=current_valid,
             )
         )
 
         stack = np.stack(
-            [
-                self._valid_depth(_remap_depth(entry, roi_transform))
-                for entry in history
-            ],
+            [_remap_depth(entry, roi_transform) for entry in history],
             axis=0,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
             fused = np.nanmedian(stack, axis=0).astype(np.float32)
 
-        current_valid = self._valid_depth(depth)
         fused = np.where(np.isnan(fused), current_valid, fused)
         fused = np.where(np.isnan(fused), 0.0, fused).astype(np.float32)
 
@@ -164,10 +162,7 @@ def _remap_depth(entry: _DepthEntry, target: RoiTransform) -> np.ndarray:
     size = target.roi_size
     target_x0, target_y0, _, _ = target.crop_xyxy
     source_x0, source_y0, _, _ = source.crop_xyxy
-    target_u, target_v = np.meshgrid(
-        np.arange(size, dtype=np.float32),
-        np.arange(size, dtype=np.float32),
-    )
+    target_u, target_v = _roi_grid(size)
     image_x = target_x0 + (target_u + 0.5) * (target.crop_width / float(size))
     image_y = target_y0 + (target_v + 0.5) * (target.crop_height / float(size))
     source_u = (image_x - source_x0) * (size / float(source.crop_width)) - 0.5
@@ -180,3 +175,12 @@ def _remap_depth(entry: _DepthEntry, target: RoiTransform) -> np.ndarray:
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=float("nan"),
     ).astype(np.float32, copy=False)
+
+
+@lru_cache(maxsize=8)
+def _roi_grid(size: int) -> tuple[np.ndarray, np.ndarray]:
+    coordinates = np.arange(size, dtype=np.float32)
+    target_u, target_v = np.meshgrid(coordinates, coordinates)
+    target_u.setflags(write=False)
+    target_v.setflags(write=False)
+    return target_u, target_v
