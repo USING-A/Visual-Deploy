@@ -50,6 +50,7 @@ def test_build_profile_summary_excludes_warmup_and_preserves_nested_queue_metric
             "queue_depth": {"capture_to_inference": 2},
             "queue_capacity": {"capture_to_inference": 2},
             "dropped_frames": {"capture": 1},
+            "workload": {"confirmed_tracks": 1, "segmentation_calls": 1},
             "completed_monotonic_ms": 1000.0,
         },
         {
@@ -61,6 +62,7 @@ def test_build_profile_summary_excludes_warmup_and_preserves_nested_queue_metric
             "queue_depth": {"capture_to_inference": 1},
             "queue_capacity": {"capture_to_inference": 2},
             "dropped_frames": {"capture": 1},
+            "workload": {"confirmed_tracks": 2, "segmentation_calls": 2},
             "completed_monotonic_ms": 1050.0,
         },
     ]
@@ -72,6 +74,7 @@ def test_build_profile_summary_excludes_warmup_and_preserves_nested_queue_metric
     assert summary["valid_target_rate"] == 0.5
     assert summary["timings"]["total_ms"]["mean"] == 25.0
     assert summary["timings"]["queue_depth.capture_to_inference"]["max"] == 2.0
+    assert summary["timings"]["workload.confirmed_tracks"]["mean"] == 1.5
     assert summary["effective_fps"] == 20.0
     assert "completed_monotonic_ms" not in summary["timings"]
     assert any("bounded latest-frame queue" in item for item in summary["recommendations"])
@@ -94,6 +97,20 @@ def test_write_profile_reports_creates_machine_and_human_readable_outputs(tmp_pa
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "Effective pipeline FPS: 25.00" in report
     assert "## Recommendations" in report
+
+
+def test_write_profile_reports_includes_workload_summary(tmp_path):
+    summary = build_profile_summary(
+        [{"total_ms": 10.0, "valid_target": True, "workload": {"confirmed_tracks": 2}}],
+        [],
+        [],
+    )
+
+    write_profile_reports(tmp_path, summary)
+
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "## Workload summary" in report
+    assert "workload.confirmed_tracks" in report
 
 
 def test_empty_profile_is_explicitly_not_actionable():

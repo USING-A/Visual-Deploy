@@ -112,6 +112,19 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
     assert timing["segmentation_ms"] >= 0.0
     assert timing["grasp_ms"] >= 0.0
     assert timing["total_ms"] >= timing["detection_ms"]
+    assert timing["workload"] == {
+        "raw_detections": 1,
+        "eligible_detections": 1,
+        "tracks": 1,
+        "confirmed_tracks": 1,
+        "depth_fused_tracks": 1,
+        "segmentation_calls": 1,
+        "segmented_tracks": 1,
+        "grasp_searches": 1,
+        "grasp_candidates": 1,
+        "pipeline_candidates": 1,
+        "rejections": 0,
+    }
 
 
 def test_offline_pipeline_rejects_candidate_that_fails_safety_gate(tmp_path):

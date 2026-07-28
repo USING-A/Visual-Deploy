@@ -34,6 +34,20 @@ _TIMING_FIELDS = (
     "diagnostic_ms",
 )
 
+_WORKLOAD_FIELDS = (
+    "raw_detections",
+    "eligible_detections",
+    "tracks",
+    "confirmed_tracks",
+    "depth_fused_tracks",
+    "segmentation_calls",
+    "segmented_tracks",
+    "grasp_searches",
+    "grasp_candidates",
+    "pipeline_candidates",
+    "rejections",
+)
+
 
 class OfflinePipeline:
     def __init__(self, detector: Any, segmentor: Any, config: dict[str, Any] | None = None) -> None:
@@ -92,9 +106,11 @@ class OfflinePipeline:
     def process_frame(self, frame: DeployFrame) -> GraspTarget:
         frame_started = perf_counter()
         timings = {name: 0.0 for name in _TIMING_FIELDS}
+        workload = {name: 0 for name in _WORKLOAD_FIELDS}
         _validate_frame(frame)
         stage_started = perf_counter()
         detections = self.detector.infer(frame.color_bgr)
+        workload["raw_detections"] = len(detections)
         timings["detection_ms"] += _elapsed_ms(stage_started)
         stage_started = perf_counter()
         eligible = [
@@ -102,7 +118,10 @@ class OfflinePipeline:
             for detection in _attach_depth_stats(detections, frame.depth_mm, self.depth_stats)
             if detection.confidence >= self.tracker.low_threshold
         ]
+        workload["eligible_detections"] = len(eligible)
         tracks = self.tracker.update(eligible)
+        workload["tracks"] = len(tracks)
+        workload["confirmed_tracks"] = sum(track.state == "confirmed" for track in tracks)
         timings["tracking_ms"] += _elapsed_ms(stage_started)
         stage_started = perf_counter()
         self.recorder.write_detection(
@@ -119,7 +138,7 @@ class OfflinePipeline:
             if track.state != "confirmed":
                 rejections.append(_rejection_record(track, "tracking", "track_not_confirmed"))
                 continue
-            candidate, rejection = self._process_track(frame, track, timings)
+            candidate, rejection = self._process_track(frame, track, timings, workload)
             if candidate is not None:
                 candidates.append(candidate)
             if rejection is not None:
@@ -163,6 +182,8 @@ class OfflinePipeline:
                     )
                 )
         timings["ranking_safety_ms"] += _elapsed_ms(stage_started)
+        workload["pipeline_candidates"] = len(candidates)
+        workload["rejections"] = len(rejections)
 
         stage_started = perf_counter()
         self.recorder.write_candidate(
@@ -182,7 +203,7 @@ class OfflinePipeline:
             self.recorder.write_target(asdict(target))
             timings["recording_ms"] += _elapsed_ms(stage_started)
             self._update_debug(frame, eligible, target, candidates)
-            self._finalize_frame(frame, eligible, candidates, rejections, target, timings, frame_started)
+            self._finalize_frame(frame, eligible, candidates, rejections, target, timings, workload, frame_started)
             return target
 
         best = selected
@@ -209,7 +230,7 @@ class OfflinePipeline:
         self.recorder.write_target(asdict(target))
         timings["recording_ms"] += _elapsed_ms(stage_started)
         self._update_debug(frame, eligible, target, candidates)
-        self._finalize_frame(frame, eligible, candidates, rejections, target, timings, frame_started)
+        self._finalize_frame(frame, eligible, candidates, rejections, target, timings, workload, frame_started)
         return target
 
     def _process_track(
@@ -217,6 +238,7 @@ class OfflinePipeline:
         frame: DeployFrame,
         track: Track,
         timings: dict[str, float],
+        workload: dict[str, int],
     ) -> tuple[_PipelineCandidate | None, dict[str, Any] | None]:
         height, width = frame.color_bgr.shape[:2]
         roi_size = 256
@@ -233,8 +255,10 @@ class OfflinePipeline:
         timings["depth_fusion_ms"] += _elapsed_ms(stage_started)
         if fused.valid_ratio <= 0.0:
             return None, _rejection_record(track, "depth_fusion", "insufficient_depth_fusion")
+        workload["depth_fused_tracks"] += 1
 
         stage_started = perf_counter()
+        workload["segmentation_calls"] += 1
         segment = self.segmentor.infer(color_roi, fused.depth_roi_mm)
         timings["segmentation_ms"] += _elapsed_ms(stage_started)
         image_mask = _mask_to_image(segment.mask_256, roi, height, width)
@@ -247,6 +271,7 @@ class OfflinePipeline:
                 value=float(segment.mask_area),
                 threshold=1.0,
             )
+        workload["segmented_tracks"] += 1
         stage_started = perf_counter()
         grasp_cfg = _pick(
             self.config.get("grasp", {}),
@@ -262,6 +287,7 @@ class OfflinePipeline:
             "exhaustive_fallback",
         )
         shadow_interval = self.grasp_shadow_verify_every_n_frames
+        workload["grasp_searches"] += 1
         patch = select_grasp_patch(
             segment.mask_256,
             fused.depth_roi_mm,
@@ -272,6 +298,7 @@ class OfflinePipeline:
         timings["grasp_ms"] += _elapsed_ms(stage_started)
         if patch is None:
             return None, _rejection_record(track, "grasp", "no_valid_grasp_patch")
+        workload["grasp_candidates"] += 1
 
         scores = CandidateScores(
             track_id=track.track_id,
@@ -298,6 +325,7 @@ class OfflinePipeline:
         rejections: list[dict[str, Any]],
         target: GraspTarget,
         timings: dict[str, float],
+        workload: dict[str, int],
         frame_started: float,
     ) -> None:
         diagnostic_started = perf_counter()
@@ -353,6 +381,7 @@ class OfflinePipeline:
                 "queue_capacity": telemetry.queue_capacity,
                 "dropped_frames": telemetry.dropped_frames,
                 "resources": telemetry.resources,
+                "workload": workload,
                 "frame_age_ms": frame_age_ms,
                 "completed_monotonic_ms": perf_counter() * 1000.0,
                 **{name: float(value) for name, value in timings.items()},

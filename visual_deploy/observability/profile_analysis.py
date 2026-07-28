@@ -263,6 +263,17 @@ def _render_markdown(summary: Mapping[str, Any]) -> str:
             lines.append(
                 f"| `{metric}` | {_fmt(stats, 'mean')} | {_fmt(stats, 'p50')} | {_fmt(stats, 'p95')} | {_fmt(stats, 'p99')} | {_fmt(stats, 'max')} |"
             )
+    workload = {
+        metric: stats
+        for metric, stats in summary.get("timings", {}).items()
+        if metric.startswith("workload.")
+    }
+    if workload:
+        lines.extend(("", "## Workload summary", "", "| Metric | Mean | P50 | P95 | Max |", "|---|---:|---:|---:|---:|"))
+        for metric, stats in workload.items():
+            lines.append(
+                f"| `{metric}` | {_fmt(stats, 'mean')} | {_fmt(stats, 'p50')} | {_fmt(stats, 'p95')} | {_fmt(stats, 'max')} |"
+            )
     lines.extend(("", "## Recommendations", ""))
     for recommendation in summary.get("recommendations", []):
         lines.append(f"- {recommendation}")
