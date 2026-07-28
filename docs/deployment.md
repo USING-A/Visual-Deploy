@@ -202,7 +202,8 @@ recording:
 ```
 
 `timings.jsonl` includes model and CPU stage latency, capture time, frame age,
-per-queue placeholders, dropped-frame counters, and attachable resource samples.
+realtime queue wait/depth/capacity/drop counters, workload counts, and attachable
+resource samples. Offline runs do not create realtime queue metrics.
 
 For Jetson profiling, record the power mode and clocks before comparing runs:
 
@@ -317,9 +318,28 @@ from 361.11 ms to 202.38 ms and effective throughput from 2.75 to 4.95 FPS. Thes
 numbers validate the code path only; repeat the standard 900-frame profile with
 real aligned D435i depth on the final Orin NX.
 
-## 8. Threading acceptance data
+## 8. Lightweight latest-frame runtime
 
-Before implementing threads, collect at least:
+The production realtime entry now uses:
+
+```text
+RealSense capture thread -> capacity-one latest-frame queue -> serialized perception
+```
+
+Tracker, depth fusion, YOLO, GCNet, grasp selection, recording, and safety remain
+single-owner and ordered. When processing is slower than the camera, the producer
+replaces the queued stale frame and increments `dropped_frames.capture_to_inference`.
+This bounds memory and frame backlog without introducing concurrent GPU inference.
+
+Set the runtime switch in YAML:
+
+```yaml
+runtime:
+  threaded_capture: true
+```
+
+Pass `--sync` to `scripts/run_realtime.py` for the legacy synchronous comparison.
+Collect at least:
 
 - capture, detector, tracker/depth, segmentor, grasp, recording, and total time;
 - frame age at output and effective FPS;
@@ -327,14 +347,9 @@ Before implementing threads, collect at least:
 - CPU load, process RSS, GPU utilization/memory, temperature, and power;
 - target validity rate and each rejection reason.
 
-Start with `capture -> bounded queue -> one serialized GPU worker -> CPU
-postprocess/recording`. Queue capacity should initially be 1 or 2 so stale frames
-are dropped instead of accumulating latency. Change this only from Orin evidence.
-
-The current synchronous runner provides stage/resource baselines but no real
-queue measurements. After bounded queues are added, the existing telemetry
-contract will automatically include queue wait, depth, capacity, and drops in the
-same `timings.jsonl` and analysis report.
+The generated summary also includes workload counts, including detections,
+confirmed tracks, segmentation calls, grasp searches, candidates, and rejections.
+Use these counts to distinguish full-workload frames from cheap empty frames.
 
 ## 9. Safety boundary
 

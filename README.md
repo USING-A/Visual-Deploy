@@ -91,6 +91,12 @@ Live D435i:
 .\.venv\Scripts\python.exe scripts\run_realtime.py --config configs\deploy.yaml
 ```
 
+The production config uses TensorRT engines and enables a capacity-one latest-frame
+capture thread. Stale camera frames are replaced instead of accumulating latency;
+tracking, depth fusion, YOLO, GCNet, and safety still run serially in one owner
+thread. Use `--sync` to restore the legacy synchronous loop for comparison. Use
+`configs/deploy.cpu.local.yaml` for the portable CPU/ONNX path.
+
 Sparse debug viewer:
 
 ```powershell
@@ -171,10 +177,9 @@ python scripts/collect_thread_profile.py \
 
 Each session is created under `runs/thread_profiles/` and contains `report.md`,
 `summary.json`, `summary.csv`, raw process/tegrastats JSONL, child logs, the
-generated config, and the pipeline `timings.jsonl`. The synchronous runtime does
-not have queues, so queue fields remain empty until bounded queues are implemented.
-Pass a Jetson-local engine config instead of `configs/deploy.yaml` when validating
-TensorRT engines.
+generated config, and the pipeline `timings.jsonl`. Realtime runs populate the
+capacity-one capture queue wait/depth/drop fields; offline runs leave queue fields
+empty. `configs/deploy.yaml` is the Jetson/TensorRT production config.
 
 Incomplete timing, child failure, timeout, interruption, or a failed requested
 tegrastats stream returns a typed nonzero exit status and remains recorded in
@@ -194,7 +199,8 @@ python3 scripts/build_tensorrt_engines.py \
   --trtexec /usr/src/tensorrt/bin/trtexec
 ```
 
-6. Change both model paths to `.engine` and both backends to `tensorrt`.
+6. Verify the engine paths in `configs/deploy.yaml`; both production backends are
+   already set to `tensorrt`.
 7. Run a fixed offline RGB-D check before connecting the realtime camera.
 
 TensorRT engines must not be copied between different TensorRT/JetPack/device
@@ -206,7 +212,7 @@ stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md)
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current verified result: `208 passed`.
+Current verified result: `210 passed`.
 
 The release-confidence evidence and the mandatory Jetson device acceptance gate
 are recorded in

@@ -7,6 +7,9 @@ camera:
   temporal_filter: false
   hole_filling_filter: false
 
+runtime:
+  threaded_capture: true
+
 detection:
   weights: weights/yolov10_sam_robust_standard.engine
   backend: tensorrt

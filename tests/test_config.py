@@ -11,6 +11,7 @@ def test_load_default_config_has_runtime_sections():
     cfg = load_config(Path("configs/deploy.yaml"))
     assert set(cfg) >= {
         "camera",
+        "runtime",
         "detection",
         "tracking",
         "roi",
@@ -27,9 +28,11 @@ def test_load_default_config_has_runtime_sections():
     assert cfg["roi"]["size"] == 256
     assert cfg["roi"]["pad_ratio"] == 0.20
     assert cfg["camera"]["align_to_color"] is True
-    assert cfg["detection"]["backend"] == "onnxruntime"
-    assert cfg["detection"]["weights"].endswith(".onnx")
-    assert cfg["segmentation"]["weights"].endswith(".onnx")
+    assert cfg["runtime"]["threaded_capture"] is True
+    assert cfg["detection"]["backend"] == "tensorrt"
+    assert cfg["detection"]["weights"].endswith(".engine")
+    assert cfg["segmentation"]["backend"] == "tensorrt"
+    assert cfg["segmentation"]["weights"].endswith(".engine")
     assert cfg["tracking"]["high_conf_threshold"] == 0.50
     assert cfg["tracking"]["low_conf_threshold"] == 0.10
     assert cfg["tracking"]["min_hits"] == 1
@@ -45,6 +48,7 @@ def test_cpu_config_preserves_production_safety_and_temporal_contracts():
     cpu = load_config(Path("configs/deploy.cpu.local.yaml"))
 
     assert cpu["tracking"] == production["tracking"]
+    assert cpu["runtime"] == production["runtime"]
     assert cpu["depth_fusion"] == production["depth_fusion"]
     assert cpu["grasp"] == production["grasp"]
     assert cpu["safety"] == production["safety"]

@@ -14,6 +14,7 @@ from visual_deploy.camera.realsense_source import RealSenseSource
 from visual_deploy.config import load_config
 from visual_deploy.inference.factory import build_detector, build_segmentor
 from visual_deploy.pipeline.offline_pipeline import OfflinePipeline
+from visual_deploy.runtime.latest_frame_source import LatestFrameSource
 
 
 def main() -> None:
@@ -25,14 +26,18 @@ def main() -> None:
     segmentor = build_segmentor(config_path, config)
     source = _build_source(config)
     pipeline = OfflinePipeline(detector=detector, segmentor=segmentor, config=config)
+    threaded_capture = bool(config.get("runtime", {}).get("threaded_capture", True)) and not args.sync
+    frames = LatestFrameSource(source) if threaded_capture else source
 
     try:
-        for idx, frame in enumerate(source):
+        for idx, frame in enumerate(frames):
             target = pipeline.process_frame(frame)
             print(json.dumps(asdict(target), ensure_ascii=False))
             if args.max_frames is not None and idx + 1 >= args.max_frames:
                 break
     finally:
+        if isinstance(frames, LatestFrameSource):
+            frames.close()
         source.close()
 
 
@@ -50,9 +55,10 @@ def _build_source(config: dict) -> RealSenseSource:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run synchronous RealSense RGB-D grasp deployment.")
+    parser = argparse.ArgumentParser(description="Run lightweight RealSense RGB-D grasp deployment.")
     parser.add_argument("--config", default="configs/deploy.yaml")
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--sync", action="store_true", help="Disable latest-frame capture and use the legacy synchronous loop.")
     return parser.parse_args()
 
 
