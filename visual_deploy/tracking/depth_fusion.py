@@ -101,23 +101,36 @@ class DepthFusionBuffer:
             )
         )
 
+        if len(history) == 1:
+            fused = np.nan_to_num(current_valid, nan=0.0).astype(np.float32, copy=False)
+            return self._result(track_id, fused, history, timestamp)
+
         stack = np.stack(
             [_remap_depth(entry, roi_transform) for entry in history],
             axis=0,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            fused = np.nanmedian(stack, axis=0).astype(np.float32)
+            fused = np.nanmedian(stack, axis=0, overwrite_input=True).astype(np.float32)
 
         fused = np.where(np.isnan(fused), current_valid, fused)
         fused = np.where(np.isnan(fused), 0.0, fused).astype(np.float32)
 
+        return self._result(track_id, fused, history, timestamp)
+
+    def _result(
+        self,
+        track_id: int,
+        fused: np.ndarray,
+        history: deque[_DepthEntry],
+        timestamp_ms: float,
+    ) -> FusedTrackDepth:
         valid_ratio = float(np.count_nonzero(fused > 0.0) / fused.size)
         if valid_ratio < self.min_valid_ratio:
             fused = np.zeros_like(fused, dtype=np.float32)
             valid_ratio = 0.0
 
-        age_ms = timestamp - history[0].timestamp_ms
+        age_ms = timestamp_ms - history[0].timestamp_ms
         return FusedTrackDepth(
             track_id=track_id,
             depth_roi_mm=fused,

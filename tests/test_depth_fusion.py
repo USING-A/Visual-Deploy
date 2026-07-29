@@ -19,6 +19,17 @@ def test_depth_fusion_returns_current_frame_until_enough_history():
     np.testing.assert_allclose(fused.depth_roi_mm, depth)
 
 
+def test_depth_fusion_single_frame_fast_path_does_not_expose_history_storage():
+    buffer = DepthFusionBuffer(window_size=2)
+    roi = RoiTransform((0, 0, 2, 2), 2)
+
+    first = buffer.update(1, 1, 1.0, roi, np.full((2, 2), 400.0, dtype=np.float32))
+    first.depth_roi_mm[:, :] = 1000.0
+    second = buffer.update(1, 2, 2.0, roi, np.full((2, 2), 600.0, dtype=np.float32))
+
+    np.testing.assert_allclose(second.depth_roi_mm, np.full((2, 2), 500.0, dtype=np.float32))
+
+
 def test_depth_fusion_uses_per_pixel_median():
     buffer = DepthFusionBuffer(window_size=3, min_depth_mm=100, max_depth_mm=5000, min_valid_ratio=0.3)
     roi = RoiTransform((0, 0, 2, 2), 2)
