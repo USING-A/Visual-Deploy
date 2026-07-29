@@ -355,6 +355,9 @@ confirmed tracks, segmentation calls, grasp searches, candidates, and rejections
 Use these counts to distinguish full-workload frames from cheap empty frames.
 The active-target scheduler adds `active_target_fast_path`,
 `active_target_fallback`, `active_target_refresh`, and `deferred_tracks`.
+Depth diagnostics add `depth_remap_ms`, `depth_median_ms`,
+`workload.depth_history_frames`, and `workload.depth_remap_calls`. Use their
+means and P95 values to distinguish ROI remapping from temporal median cost.
 
 The scheduler does not bypass safety checks. It keeps a previously accepted
 track only while that track still produces a valid depth, segmentation, grasp,
@@ -466,6 +469,15 @@ The latest two-apple report processed two complete downstream branches on every
 frame. Its mean 565.53 ms total contained 351.86 ms depth fusion, 48.62 ms
 segmentation, and 103.97 ms grasp search. Those target-dependent stages account
 for about 89% of the frame time.
+
+After active-target scheduling, report
+`thread_profile_20260729_032830_306938` reached 4.11 FPS with 100% valid targets,
+zero fallbacks, and 1.033 expensive branches per frame. Depth fusion remained the
+largest stage at 126.01 ms mean / 226.94 ms P95. Refresh frames showed that a
+history-empty second target added only about 3.7 ms of depth fusion, isolating the
+five-frame temporal median/remap path as the remaining hotspot. The runtime now
+uses a bit-exact small-window median specialized for the configured five-frame
+history while retaining the same fusion parameters and invalid-depth behavior.
 
 To isolate the scheduler effect, collect two runs in the same device power mode
 and scene. First use the default config. Then copy `configs/deploy.yaml`, set only

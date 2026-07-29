@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from functools import lru_cache
-import warnings
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -18,6 +18,15 @@ class FusedTrackDepth:
     valid_ratio: float
     source_frame_count: int
     age_ms: float
+    profile: DepthFusionProfile | None = None
+
+
+@dataclass(frozen=True)
+class DepthFusionProfile:
+    remap_ms: float
+    median_ms: float
+    history_frame_count: int
+    remap_count: int
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,7 @@ class DepthFusionBuffer:
         max_depth_mm: float = 5000.0,
         min_valid_ratio: float = 0.3,
         min_roi_iou: float = 0.5,
+        profiling_enabled: bool = False,
     ) -> None:
         if not np.isfinite(window_size) or int(window_size) != window_size or window_size <= 0:
             raise ValueError("window_size must be a positive integer")
@@ -55,6 +65,7 @@ class DepthFusionBuffer:
         self.max_depth_mm = float(max_depth_mm)
         self.min_valid_ratio = float(min_valid_ratio)
         self.min_roi_iou = float(min_roi_iou)
+        self.profiling_enabled = bool(profiling_enabled)
         self._history: dict[int, deque[_DepthEntry]] = {}
 
     def update(
@@ -103,20 +114,29 @@ class DepthFusionBuffer:
 
         if len(history) == 1:
             fused = np.nan_to_num(current_valid, nan=0.0).astype(np.float32, copy=False)
-            return self._result(track_id, fused, history, timestamp)
+            profile = DepthFusionProfile(0.0, 0.0, 1, 0) if self.profiling_enabled else None
+            return self._result(track_id, fused, history, timestamp, profile)
 
+        remap_count = sum(entry.roi_transform.crop_xyxy != roi_transform.crop_xyxy for entry in history)
+        remap_started = perf_counter() if self.profiling_enabled else 0.0
         stack = np.stack(
             [_remap_depth(entry, roi_transform) for entry in history],
             axis=0,
         )
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            fused = np.nanmedian(stack, axis=0, overwrite_input=True).astype(np.float32)
+        remap_ms = (perf_counter() - remap_started) * 1000.0 if self.profiling_enabled else 0.0
+        median_started = perf_counter() if self.profiling_enabled else 0.0
+        fused = _nanmedian_small(stack)
+        median_ms = (perf_counter() - median_started) * 1000.0 if self.profiling_enabled else 0.0
 
         fused = np.where(np.isnan(fused), current_valid, fused)
         fused = np.where(np.isnan(fused), 0.0, fused).astype(np.float32)
 
-        return self._result(track_id, fused, history, timestamp)
+        profile = (
+            DepthFusionProfile(remap_ms, median_ms, len(history), remap_count)
+            if self.profiling_enabled
+            else None
+        )
+        return self._result(track_id, fused, history, timestamp, profile)
 
     def _result(
         self,
@@ -124,6 +144,7 @@ class DepthFusionBuffer:
         fused: np.ndarray,
         history: deque[_DepthEntry],
         timestamp_ms: float,
+        profile: DepthFusionProfile | None,
     ) -> FusedTrackDepth:
         valid_ratio = float(np.count_nonzero(fused > 0.0) / fused.size)
         if valid_ratio < self.min_valid_ratio:
@@ -137,6 +158,7 @@ class DepthFusionBuffer:
             valid_ratio=valid_ratio,
             source_frame_count=len(history),
             age_ms=age_ms,
+            profile=profile,
         )
 
     def clear(self, track_id: int | None = None) -> None:
@@ -188,6 +210,26 @@ def _remap_depth(entry: _DepthEntry, target: RoiTransform) -> np.ndarray:
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=float("nan"),
     ).astype(np.float32, copy=False)
+
+
+def _nanmedian_small(stack: np.ndarray) -> np.ndarray:
+    """Compute a float32 NaN-aware median for a small temporal stack.
+
+    ``stack`` is a disposable buffer containing only finite depths or NaNs. It is
+    sorted in place to avoid the general-purpose masked-array path used by
+    ``numpy.nanmedian``.
+    """
+    valid = np.isfinite(stack)
+    valid_counts = valid.sum(axis=0, dtype=np.intp)
+    stack[~valid] = np.inf
+    stack.sort(axis=0)
+    lower_indices = np.maximum(valid_counts - 1, 0) // 2
+    upper_indices = valid_counts // 2
+    lower = np.take_along_axis(stack, lower_indices[None], axis=0)[0]
+    upper = np.take_along_axis(stack, upper_indices[None], axis=0)[0]
+    median = (lower + upper) * np.float32(0.5)
+    median[valid_counts == 0] = np.nan
+    return median.astype(np.float32, copy=False)
 
 
 @lru_cache(maxsize=8)

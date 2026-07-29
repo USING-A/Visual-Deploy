@@ -140,6 +140,8 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
         "tracks": 1,
         "confirmed_tracks": 1,
         "depth_fused_tracks": 1,
+        "depth_history_frames": 1,
+        "depth_remap_calls": 0,
         "segmentation_calls": 1,
         "segmented_tracks": 1,
         "grasp_searches": 1,

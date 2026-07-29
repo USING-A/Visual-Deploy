@@ -27,6 +27,8 @@ _TIMING_FIELDS = (
     "detection_ms",
     "tracking_ms",
     "depth_fusion_ms",
+    "depth_remap_ms",
+    "depth_median_ms",
     "segmentation_ms",
     "grasp_ms",
     "ranking_safety_ms",
@@ -40,6 +42,8 @@ _WORKLOAD_FIELDS = (
     "tracks",
     "confirmed_tracks",
     "depth_fused_tracks",
+    "depth_history_frames",
+    "depth_remap_calls",
     "segmentation_calls",
     "segmented_tracks",
     "grasp_searches",
@@ -58,6 +62,7 @@ class OfflinePipeline:
         self.detector = detector
         self.segmentor = segmentor
         self.config = config or {}
+        self.timing_enabled = bool(self.config.get("profiling", {}).get("enabled", False))
 
         tracking_cfg = self.config.get("tracking", {})
         self.depth_stats = DepthRoiStats(**_pick(self.config.get("depth_fusion", {}), "min_depth_mm", "max_depth_mm"))
@@ -69,7 +74,17 @@ class OfflinePipeline:
             max_lost=int(tracking_cfg.get("max_lost", 30)),
             min_hits=self.min_hits,
         )
-        self.depth_fusion = DepthFusionBuffer(**_pick(self.config.get("depth_fusion", {}), "window_size", "min_depth_mm", "max_depth_mm", "min_valid_ratio", "min_roi_iou"))
+        self.depth_fusion = DepthFusionBuffer(
+            **_pick(
+                self.config.get("depth_fusion", {}),
+                "window_size",
+                "min_depth_mm",
+                "max_depth_mm",
+                "min_valid_ratio",
+                "min_roi_iou",
+            ),
+            profiling_enabled=self.timing_enabled,
+        )
         self.ranker = TargetRanker(weights=self.config.get("ranking", {}).get("weights"))
         self.safety_validator = TargetSafetyValidator.from_config(self.config.get("safety"))
         self.continuity_validator = TargetContinuityValidator.from_config(self.config.get("safety"))
@@ -80,7 +95,6 @@ class OfflinePipeline:
         self.grasp_shadow_verify_every_n_frames = shadow_interval
         self.last_debug: DebugSnapshot | None = None
         self.debug_enabled = bool(self.config.get("debug", {}).get("enabled", False))
-        self.timing_enabled = bool(self.config.get("profiling", {}).get("enabled", False))
         runtime_cfg = self.config.get("runtime", {})
         active_target_cfg = runtime_cfg.get("active_target", {})
         if not isinstance(active_target_cfg, dict):
@@ -324,6 +338,11 @@ class OfflinePipeline:
         stage_started = perf_counter()
         fused = self.depth_fusion.update(track.track_id, frame.frame_id, frame.timestamp_ms, roi, depth_roi)
         timings["depth_fusion_ms"] += _elapsed_ms(stage_started)
+        if fused.profile is not None:
+            timings["depth_remap_ms"] += fused.profile.remap_ms
+            timings["depth_median_ms"] += fused.profile.median_ms
+            workload["depth_history_frames"] += fused.profile.history_frame_count
+            workload["depth_remap_calls"] += fused.profile.remap_count
         if fused.valid_ratio <= 0.0:
             return None, _rejection_record(track, "depth_fusion", "insufficient_depth_fusion")
         workload["depth_fused_tracks"] += 1

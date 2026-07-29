@@ -1,8 +1,10 @@
+import warnings
+
 import numpy as np
 import pytest
 
 from visual_deploy.geometry.roi import RoiTransform
-from visual_deploy.tracking.depth_fusion import DepthFusionBuffer
+from visual_deploy.tracking.depth_fusion import DepthFusionBuffer, _nanmedian_small
 
 
 def test_depth_fusion_returns_current_frame_until_enough_history():
@@ -37,6 +39,22 @@ def test_depth_fusion_uses_per_pixel_median():
         out = buffer.update(1, idx, float(idx), roi, np.full((2, 2), value, dtype=np.float32))
     assert out.source_frame_count == 3
     np.testing.assert_allclose(out.depth_roi_mm, np.full((2, 2), 500.0, dtype=np.float32))
+
+
+@pytest.mark.parametrize("window_size", [2, 3, 4, 5])
+def test_small_window_median_is_bit_exact_with_numpy(window_size):
+    rng = np.random.default_rng(window_size)
+    stack = rng.uniform(100.0, 5000.0, size=(window_size, 32, 32)).astype(np.float32)
+    stack[rng.random(stack.shape) < 0.2] = np.nan
+    stack[:, 0, 0] = np.nan
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered", category=RuntimeWarning)
+        expected = np.nanmedian(stack, axis=0)
+    actual = _nanmedian_small(stack.copy())
+
+    assert actual.dtype == np.float32
+    assert np.array_equal(actual, expected, equal_nan=True)
 
 
 def test_depth_fusion_ignores_invalid_values():
@@ -127,6 +145,25 @@ def test_depth_fusion_remaps_history_across_small_crop_motion():
     assert out.age_ms == 1.0
     np.testing.assert_allclose(out.depth_roi_mm[:, :-1], 600.0)
     np.testing.assert_allclose(out.depth_roi_mm[:, -1], 800.0)
+
+
+def test_depth_fusion_profiles_history_remap_and_median_only_when_enabled():
+    roi_a = RoiTransform((0, 0, 10, 10), 10)
+    roi_b = RoiTransform((1, 0, 11, 10), 10)
+    profiled = DepthFusionBuffer(window_size=2, profiling_enabled=True)
+    unprofiled = DepthFusionBuffer(window_size=2, profiling_enabled=False)
+    depth = np.full((10, 10), 500.0, dtype=np.float32)
+
+    profiled.update(1, 1, 1.0, roi_a, depth)
+    result = profiled.update(1, 2, 2.0, roi_b, depth)
+    plain = unprofiled.update(1, 1, 1.0, roi_a, depth)
+
+    assert result.profile is not None
+    assert result.profile.history_frame_count == 2
+    assert result.profile.remap_count == 1
+    assert result.profile.remap_ms >= 0.0
+    assert result.profile.median_ms >= 0.0
+    assert plain.profile is None
 
 
 def test_depth_fusion_fails_closed_when_valid_ratio_is_too_low():

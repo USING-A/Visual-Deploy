@@ -208,6 +208,11 @@ generated config, and the pipeline `timings.jsonl`. Realtime runs populate the
 capacity-one capture queue wait/depth/drop fields; offline runs leave queue fields
 empty. `configs/deploy.yaml` is the Jetson/TensorRT production config.
 
+Depth profiling now separates `depth_remap_ms` and `depth_median_ms`, and records
+`depth_history_frames` plus `depth_remap_calls` under `timings.workload`. These
+fields are emitted only through the existing profiling path; production defaults
+remain free of timing records.
+
 Threading overlaps only camera capture with the still-serialized perception
 pipeline. In the representative Orin report, capture was about 16 ms and
 perception was about 85 ms, so the synchronous cycle was roughly 101 ms while
