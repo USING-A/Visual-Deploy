@@ -46,6 +46,10 @@ _WORKLOAD_FIELDS = (
     "grasp_candidates",
     "pipeline_candidates",
     "rejections",
+    "active_target_fast_path",
+    "active_target_fallback",
+    "active_target_refresh",
+    "deferred_tracks",
 )
 
 
@@ -77,6 +81,17 @@ class OfflinePipeline:
         self.last_debug: DebugSnapshot | None = None
         self.debug_enabled = bool(self.config.get("debug", {}).get("enabled", False))
         self.timing_enabled = bool(self.config.get("profiling", {}).get("enabled", False))
+        runtime_cfg = self.config.get("runtime", {})
+        active_target_cfg = runtime_cfg.get("active_target", {})
+        if not isinstance(active_target_cfg, dict):
+            raise ValueError("runtime.active_target must be a mapping")
+        self.active_target_enabled = bool(active_target_cfg.get("enabled", False))
+        refresh_interval = active_target_cfg.get("refresh_interval_frames", 30)
+        if isinstance(refresh_interval, bool) or not isinstance(refresh_interval, int) or refresh_interval <= 0:
+            raise ValueError("runtime.active_target.refresh_interval_frames must be a positive integer")
+        self.active_target_refresh_interval_frames = refresh_interval
+        self._active_track_id: int | None = None
+        self._processed_frame_count = 0
 
         recording_cfg = self.config.get("recording", {})
         channels = {
@@ -104,6 +119,7 @@ class OfflinePipeline:
         self._last_event_frame_id: int | None = None
 
     def process_frame(self, frame: DeployFrame) -> GraspTarget:
+        self._processed_frame_count += 1
         frame_started = perf_counter()
         timings = {name: 0.0 for name in _TIMING_FIELDS}
         workload = {name: 0 for name in _WORKLOAD_FIELDS}
@@ -133,11 +149,21 @@ class OfflinePipeline:
         )
 
         candidates: list[_PipelineCandidate] = []
-        rejections: list[dict[str, Any]] = []
-        for track in tracks:
-            if track.state != "confirmed":
-                rejections.append(_rejection_record(track, "tracking", "track_not_confirmed"))
-                continue
+        rejections = [
+            _rejection_record(track, "tracking", "track_not_confirmed")
+            for track in tracks
+            if track.state != "confirmed"
+        ]
+        confirmed_tracks = [track for track in tracks if track.state == "confirmed"]
+        primary_tracks, deferred_tracks, fast_path, refresh = self._schedule_tracks(confirmed_tracks)
+        workload["active_target_fast_path"] = int(fast_path)
+        workload["active_target_refresh"] = int(refresh)
+        workload["deferred_tracks"] = len(deferred_tracks)
+        if fast_path:
+            for track in deferred_tracks:
+                self.depth_fusion.clear(track.track_id)
+
+        for track in primary_tracks:
             candidate, rejection = self._process_track(frame, track, timings, workload)
             if candidate is not None:
                 candidates.append(candidate)
@@ -145,6 +171,101 @@ class OfflinePipeline:
                 rejections.append(rejection)
 
         stage_started = perf_counter()
+        selected, selected_coordinates = self._select_candidate(frame, candidates, rejections)
+        timings["ranking_safety_ms"] += _elapsed_ms(stage_started)
+
+        if fast_path and selected is None and deferred_tracks:
+            workload["active_target_fallback"] = 1
+            fallback_candidates: list[_PipelineCandidate] = []
+            for track in deferred_tracks:
+                candidate, rejection = self._process_track(frame, track, timings, workload)
+                if candidate is not None:
+                    candidates.append(candidate)
+                    fallback_candidates.append(candidate)
+                if rejection is not None:
+                    rejections.append(rejection)
+            stage_started = perf_counter()
+            selected, selected_coordinates = self._select_candidate(frame, fallback_candidates, rejections)
+            timings["ranking_safety_ms"] += _elapsed_ms(stage_started)
+
+        workload["pipeline_candidates"] = len(candidates)
+        workload["rejections"] = len(rejections)
+
+        stage_started = perf_counter()
+        self.recorder.write_candidate(
+            {
+                "frame_id": frame.frame_id,
+                "timestamp_ms": frame.timestamp_ms,
+                "candidates": [candidate.to_record() for candidate in candidates],
+                "rejections": rejections,
+            }
+        )
+        timings["recording_ms"] += _elapsed_ms(stage_started)
+
+        if selected is None:
+            self._active_track_id = None
+            reason = "no_safe_grasp_candidate" if candidates else "no_valid_grasp_candidate"
+            target = GraspTarget(valid=False, frame_id=frame.frame_id, reason=reason)
+            stage_started = perf_counter()
+            self.recorder.write_target(asdict(target))
+            timings["recording_ms"] += _elapsed_ms(stage_started)
+            self._update_debug(frame, eligible, target, candidates)
+            self._finalize_frame(frame, eligible, candidates, rejections, target, timings, workload, frame_started)
+            return target
+
+        best = selected
+        best_score = selected.scores
+        if selected_coordinates is None:
+            raise RuntimeError("selected candidate coordinates are missing")
+        u_img, v_img, z_mm = selected_coordinates
+        xyz = backproject_pixel(u_img, v_img, z_mm, frame.intrinsics)
+        approach = approach_from_normal(best.patch.normal_xyz)
+        target = GraspTarget(
+            valid=True,
+            frame_id=frame.frame_id,
+            track_id=best.track.track_id,
+            u_px=float(u_img),
+            v_px=float(v_img),
+            z_mm=float(z_mm),
+            xyz_camera_m=tuple(float(value) for value in xyz),
+            normal_xyz=tuple(float(value) for value in best.patch.normal_xyz),
+            approach_axis=tuple(float(value) for value in approach),
+            target_score=float(best_score.target_score),
+        )
+        self.continuity_validator.accept(best.track.track_id, frame.timestamp_ms, u_img, v_img, z_mm)
+        self._active_track_id = best.track.track_id
+        stage_started = perf_counter()
+        self.recorder.write_target(asdict(target))
+        timings["recording_ms"] += _elapsed_ms(stage_started)
+        self._update_debug(frame, eligible, target, candidates)
+        self._finalize_frame(frame, eligible, candidates, rejections, target, timings, workload, frame_started)
+        return target
+
+    def _schedule_tracks(
+        self,
+        confirmed_tracks: list[Track],
+    ) -> tuple[list[Track], list[Track], bool, bool]:
+        if not self.active_target_enabled or self._active_track_id is None:
+            return confirmed_tracks, [], False, False
+
+        active = next((track for track in confirmed_tracks if track.track_id == self._active_track_id), None)
+        if active is None:
+            self.depth_fusion.clear(self._active_track_id)
+            self._active_track_id = None
+            return confirmed_tracks, [], False, False
+
+        if self._processed_frame_count % self.active_target_refresh_interval_frames == 0:
+            return confirmed_tracks, [], False, True
+
+        deferred = [track for track in confirmed_tracks if track.track_id != active.track_id]
+        return [active], deferred, True, False
+
+    def _select_candidate(
+        self,
+        frame: DeployFrame,
+        candidates: list[_PipelineCandidate],
+        rejections: list[dict[str, Any]],
+    ) -> tuple[_PipelineCandidate | None, tuple[float, float, float] | None]:
         ranked = self.ranker.rank([candidate.scores for candidate in candidates])
         candidates_by_track = {candidate.track.track_id: candidate for candidate in candidates}
         selected: _PipelineCandidate | None = None
@@ -181,57 +302,7 @@ class OfflinePipeline:
                         threshold=candidate.validation.threshold,
                     )
                 )
-        timings["ranking_safety_ms"] += _elapsed_ms(stage_started)
-        workload["pipeline_candidates"] = len(candidates)
-        workload["rejections"] = len(rejections)
-
-        stage_started = perf_counter()
-        self.recorder.write_candidate(
-            {
-                "frame_id": frame.frame_id,
-                "timestamp_ms": frame.timestamp_ms,
-                "candidates": [candidate.to_record() for candidate in candidates],
-                "rejections": rejections,
-            }
-        )
-        timings["recording_ms"] += _elapsed_ms(stage_started)
-
-        if selected is None:
-            reason = "no_safe_grasp_candidate" if candidates else "no_valid_grasp_candidate"
-            target = GraspTarget(valid=False, frame_id=frame.frame_id, reason=reason)
-            stage_started = perf_counter()
-            self.recorder.write_target(asdict(target))
-            timings["recording_ms"] += _elapsed_ms(stage_started)
-            self._update_debug(frame, eligible, target, candidates)
-            self._finalize_frame(frame, eligible, candidates, rejections, target, timings, workload, frame_started)
-            return target
-
-        best = selected
-        best_score = selected.scores
-        if selected_coordinates is None:
-            raise RuntimeError("selected candidate coordinates are missing")
-        u_img, v_img, z_mm = selected_coordinates
-        xyz = backproject_pixel(u_img, v_img, z_mm, frame.intrinsics)
-        approach = approach_from_normal(best.patch.normal_xyz)
-        target = GraspTarget(
-            valid=True,
-            frame_id=frame.frame_id,
-            track_id=best.track.track_id,
-            u_px=float(u_img),
-            v_px=float(v_img),
-            z_mm=float(z_mm),
-            xyz_camera_m=tuple(float(value) for value in xyz),
-            normal_xyz=tuple(float(value) for value in best.patch.normal_xyz),
-            approach_axis=tuple(float(value) for value in approach),
-            target_score=float(best_score.target_score),
-        )
-        self.continuity_validator.accept(best.track.track_id, frame.timestamp_ms, u_img, v_img, z_mm)
-        stage_started = perf_counter()
-        self.recorder.write_target(asdict(target))
-        timings["recording_ms"] += _elapsed_ms(stage_started)
-        self._update_debug(frame, eligible, target, candidates)
-        self._finalize_frame(frame, eligible, candidates, rejections, target, timings, workload, frame_started)
-        return target
+        return selected, selected_coordinates
 
     def _process_track(
         self,

@@ -29,6 +29,7 @@ def test_load_default_config_has_runtime_sections():
     assert cfg["roi"]["pad_ratio"] == 0.20
     assert cfg["camera"]["align_to_color"] is True
     assert cfg["runtime"]["threaded_capture"] is True
+    assert cfg["runtime"]["active_target"] == {"enabled": True, "refresh_interval_frames": 30}
     assert cfg["detection"]["backend"] == "tensorrt"
     assert cfg["detection"]["weights"].endswith(".engine")
     assert cfg["segmentation"]["backend"] == "tensorrt"

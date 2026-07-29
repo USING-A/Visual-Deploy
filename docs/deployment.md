@@ -336,6 +336,9 @@ Set the runtime switch in YAML:
 ```yaml
 runtime:
   threaded_capture: true
+  active_target:
+    enabled: true
+    refresh_interval_frames: 30
 ```
 
 Pass `--sync` to `scripts/run_realtime.py` for the legacy synchronous comparison.
@@ -350,6 +353,15 @@ Collect at least:
 The generated summary also includes workload counts, including detections,
 confirmed tracks, segmentation calls, grasp searches, candidates, and rejections.
 Use these counts to distinguish full-workload frames from cheap empty frames.
+The active-target scheduler adds `active_target_fast_path`,
+`active_target_fallback`, `active_target_refresh`, and `deferred_tracks`.
+
+The scheduler does not bypass safety checks. It keeps a previously accepted
+track only while that track still produces a valid depth, segmentation, grasp,
+safety, and continuity result. Any failure immediately runs the deferred tracks
+in the same frame. A periodic full refresh prevents indefinite preference for a
+target that is valid but no longer globally best. Deferred-track depth history is
+cleared so a later fallback cannot fuse stale ROI depth.
 
 ### 8.1 Exact Jetson comparison procedure
 
@@ -448,18 +460,49 @@ microbenchmark gain was 8.3% within the depth-fusion stage, not 8.3% across the
 whole pipeline. Larger gains require TensorRT buffer reuse and further depth-fusion
 work rather than additional general-purpose threads.
 
-### 8.3 Expected result and next optimization order
+### 8.3 Multi-target scheduler comparison
 
-For the current engines, expect approximately 10.5 to 12 FPS, a bounded queue,
-and intentional stale-frame drops. Frame age may remain around 95 to 120 ms because
-it still contains the roughly 85 ms perception service time plus a short queue wait.
+The latest two-apple report processed two complete downstream branches on every
+frame. Its mean 565.53 ms total contained 351.86 ms depth fusion, 48.62 ms
+segmentation, and 103.97 ms grasp search. Those target-dependent stages account
+for about 89% of the frame time.
+
+To isolate the scheduler effect, collect two runs in the same device power mode
+and scene. First use the default config. Then copy `configs/deploy.yaml`, set only
+`runtime.active_target.enabled: false`, and collect the same frame count with a
+different session name. Compare:
+
+- effective FPS, total mean/P95, and valid-target rate;
+- mean `segmentation_calls` and `grasp_searches` per frame;
+- `active_target_fast_path`, `active_target_fallback`, and refresh counts;
+- CPU frequency, GPU utilization, input power, temperature, and frame age.
+
+With exactly two persistent valid tracks and a 30-frame refresh interval, the
+expected steady-state expensive branch count is about 1.03 per frame instead of
+2.00. Using the latest report only as a workload model gives an approximate
+`565.53 ms -> 322 ms` total reduction, or `1.77 -> 3.1 FPS`, before any device
+clock recovery. This is a projection, not an acceptance result. Accept the change
+only if the measured valid-target rate remains usable, fallbacks complete in the
+same frame, and the scheduler-enabled run improves total latency.
+
+Set `runtime.active_target.enabled: false` for immediate rollback. Reduce
+`refresh_interval_frames` if faster global reselection matters more than
+throughput; increase it only after observing a low fallback rate.
+
+### 8.4 Expected result and next optimization order
+
+On the earlier stable one-target run, the current engines supported approximately
+10.5 to 12 FPS with a bounded queue and intentional stale-frame drops. Do not use
+that range as the two-target acceptance threshold: the latest report also showed
+a device-wide clock/power collapse. Re-establish the Jetson power state and use
+the paired scheduler-on/off measurement above as the current acceptance evidence.
 
 Continue in this order after the device comparison:
 
 1. remove the Orin compute-capability warning with the JetPack-matched PyTorch build;
 2. reuse TensorRT input/output CUDA buffers and narrow stream synchronization;
 3. reduce depth remap/median allocation cost while preserving exact grasp output;
-4. use workload counts to decide whether multi-target prioritization is necessary;
+4. verify active-target scheduling on the two-apple scene and tune only the full-refresh interval;
 5. evaluate INT8 or dynamic batching only as a separate accuracy-gated experiment.
 
 Do not add more CPU threads merely to increase the thread count. Tracker and depth

@@ -9,6 +9,9 @@ camera:
 
 runtime:
   threaded_capture: true
+  active_target:
+    enabled: true
+    refresh_interval_frames: 30
 
 detection:
   weights: weights/yolov10_sam_robust_standard.onnx

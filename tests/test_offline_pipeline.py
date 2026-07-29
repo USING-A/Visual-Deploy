@@ -7,7 +7,7 @@ from visual_deploy.detection.yolo_detector import MockDetector
 from visual_deploy.pipeline.offline_pipeline import OfflinePipeline
 from visual_deploy.segmentation.gcnet_segmentor import SegmentResult
 from scripts.run_offline_smoke import _build_detector, _build_segmentor
-from visual_deploy.types import CameraIntrinsics, DeployFrame
+from visual_deploy.types import CameraIntrinsics, DeployFrame, Detection
 from visual_deploy.observability.runtime_telemetry import FrameRuntimeTelemetry, attach_runtime_telemetry
 
 
@@ -23,6 +23,28 @@ class MockSegmentor:
         yy, xx = np.ogrid[:256, :256]
         mask[(yy - 128) ** 2 + (xx - 128) ** 2 <= 60 ** 2] = True
         return SegmentResult(mask.astype(np.float32), mask, int(mask.sum()), 1.0)
+
+
+class TwoAppleDetector:
+    def infer(self, color_bgr):
+        return [
+            Detection((120.0, 120.0, 280.0, 360.0), 0, 0.9, "apple"),
+            Detection((360.0, 120.0, 520.0, 360.0), 0, 0.9, "apple"),
+        ]
+
+
+class CountingSegmentor(MockSegmentor):
+    def __init__(self, empty_on_calls=()) -> None:
+        super().__init__()
+        self.calls = 0
+        self.empty_on_calls = set(empty_on_calls)
+
+    def infer(self, color_bgr_256, depth_mm_256):
+        self.calls += 1
+        if self.calls in self.empty_on_calls:
+            empty = np.zeros((256, 256), dtype=bool)
+            return SegmentResult(empty.astype(np.float32), empty, 0, 0.0)
+        return super().infer(color_bgr_256, depth_mm_256)
 
 
 def _frame(frame_id: int = 1, timestamp_ms: float = 1.0, depth_value_mm: float = 500.0) -> DeployFrame:
@@ -124,7 +146,78 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
         "grasp_candidates": 1,
         "pipeline_candidates": 1,
         "rejections": 0,
+        "active_target_fast_path": 0,
+        "active_target_fallback": 0,
+        "active_target_refresh": 0,
+        "deferred_tracks": 0,
     }
+
+
+def test_active_target_fast_path_skips_deferred_track_and_periodically_refreshes(tmp_path):
+    segmentor = CountingSegmentor()
+    pipeline = OfflinePipeline(
+        TwoAppleDetector(),
+        segmentor,
+        config={
+            "runtime": {"active_target": {"enabled": True, "refresh_interval_frames": 3}},
+            "profiling": {"enabled": True},
+            "recording": {
+                "enabled": True,
+                "save_timings": True,
+                "save_candidates": True,
+                "output_root": str(tmp_path),
+            },
+        },
+    )
+
+    first = pipeline.process_frame(_frame(frame_id=1, timestamp_ms=0.0))
+    second = pipeline.process_frame(_frame(frame_id=2, timestamp_ms=33.0))
+    third = pipeline.process_frame(_frame(frame_id=3, timestamp_ms=66.0))
+
+    records = [json.loads(line) for line in (pipeline.recorder.run_dir / "timings.jsonl").read_text().splitlines()]
+    candidate_records = [
+        json.loads(line) for line in (pipeline.recorder.run_dir / "candidates.jsonl").read_text().splitlines()
+    ]
+    assert first.valid and second.valid and third.valid
+    assert first.track_id == second.track_id
+    assert segmentor.calls == 5
+    assert records[0]["workload"]["segmentation_calls"] == 2
+    assert records[1]["workload"]["segmentation_calls"] == 1
+    assert records[1]["workload"]["active_target_fast_path"] == 1
+    assert records[1]["workload"]["deferred_tracks"] == 1
+    assert records[2]["workload"]["segmentation_calls"] == 2
+    assert records[2]["workload"]["active_target_refresh"] == 1
+    refresh_history = {
+        candidate["track_id"]: candidate["depth_fusion"]["source_frame_count"]
+        for candidate in candidate_records[2]["candidates"]
+    }
+    assert refresh_history[first.track_id] == 3
+    assert refresh_history[next(track_id for track_id in refresh_history if track_id != first.track_id)] == 1
+
+
+def test_active_target_failure_runs_full_fallback_in_same_frame(tmp_path):
+    segmentor = CountingSegmentor(empty_on_calls={3})
+    pipeline = OfflinePipeline(
+        TwoAppleDetector(),
+        segmentor,
+        config={
+            "runtime": {"active_target": {"enabled": True, "refresh_interval_frames": 30}},
+            "profiling": {"enabled": True},
+            "recording": {"enabled": True, "save_timings": True, "output_root": str(tmp_path)},
+        },
+    )
+
+    first = pipeline.process_frame(_frame(frame_id=1, timestamp_ms=0.0))
+    second = pipeline.process_frame(_frame(frame_id=2, timestamp_ms=33.0))
+
+    records = [json.loads(line) for line in (pipeline.recorder.run_dir / "timings.jsonl").read_text().splitlines()]
+    assert first.valid is True
+    assert second.valid is True
+    assert second.track_id != first.track_id
+    assert segmentor.calls == 4
+    assert records[1]["workload"]["active_target_fast_path"] == 1
+    assert records[1]["workload"]["active_target_fallback"] == 1
+    assert records[1]["workload"]["segmentation_calls"] == 2
 
 
 def test_offline_pipeline_rejects_candidate_that_fails_safety_gate(tmp_path):
@@ -289,3 +382,18 @@ def test_pipeline_rejects_invalid_grasp_shadow_interval(value):
             MockSegmentor(),
             config={"grasp": {"shadow_verify_every_n_frames": value}},
         )
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True])
+def test_pipeline_rejects_invalid_active_target_refresh_interval(value):
+    with pytest.raises(ValueError, match="refresh_interval_frames"):
+        OfflinePipeline(
+            MockDetector(0.9),
+            MockSegmentor(),
+            config={"runtime": {"active_target": {"refresh_interval_frames": value}}},
+        )
+
+
+def test_pipeline_rejects_non_mapping_active_target_config():
+    with pytest.raises(ValueError, match="active_target"):
+        OfflinePipeline(MockDetector(0.9), MockSegmentor(), config={"runtime": {"active_target": True}})

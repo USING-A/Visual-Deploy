@@ -132,6 +132,23 @@ Enable `recording.enabled` plus only the channels needed for a specific test.
 `profiling.enabled` adds `timings.jsonl`; `diagnostics.enabled` permits configured
 safety/continuity events and artifacts.
 
+For multi-apple scenes, the production config keeps the last valid target as the
+active target. Ordinary frames run the expensive depth/segmentation/grasp branch
+only for that track; failure triggers all remaining confirmed tracks in the same
+frame, and every 30 processed frames restores full ranking:
+
+```yaml
+runtime:
+  threaded_capture: true
+  active_target:
+    enabled: true
+    refresh_interval_frames: 30
+```
+
+Set `active_target.enabled: false` to recover the original all-target-per-frame
+behavior. Profiling exposes fast-path, fallback, refresh, and deferred-track
+counts under `timings.workload`.
+
 ## Grasp candidate search
 
 Deployment uses a deterministic coarse-to-fine search that pre-ranks candidates
@@ -230,7 +247,8 @@ stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md)
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Current verified result: `212 passed`.
+Current verified result is reported with each release commit; rerun the command
+above after changing a model, TensorRT engine, or JetPack environment.
 
 The release-confidence evidence and the mandatory Jetson device acceptance gate
 are recorded in
