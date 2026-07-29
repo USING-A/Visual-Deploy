@@ -576,9 +576,9 @@ the paired scheduler-on/off measurement above as the current acceptance evidence
 Continue in this order after the device comparison:
 
 1. remove the Orin compute-capability warning with the JetPack-matched PyTorch build;
-2. device-validate the TensorRT buffer reuse implemented in section 8.5;
-3. reduce depth remap/median allocation cost while preserving exact grasp output;
-4. verify active-target scheduling on the two-apple scene and tune only the full-refresh interval;
+2. retain the V5-validated TensorRT buffer reuse implemented in section 8.5;
+3. device-validate the exact grasp median/MAD optimization in section 8.6;
+4. tune the active-target refresh interval only if a stable two-apple run shows a need;
 5. evaluate INT8 or dynamic batching only as a separate accuracy-gated experiment.
 
 Do not add more CPU threads merely to increase the thread count. Tracker and depth
@@ -625,11 +625,39 @@ python scripts/collect_thread_profile.py \
 ```
 
 Then copy the config, disable both switches in that copy, and rerun with
-`--session-name tensorrt-buffer-reuse-off`. Accept reuse when the run completes,
-valid-target rate does not regress, process memory reaches a stable plateau, and
-TensorRT stage latency or total latency improves. The current Windows tests use
-fake TensorRT 8/10 APIs; the Jetson profile remains the real engine acceptance
-gate.
+`--session-name tensorrt-buffer-reuse-off` when an isolated attribution number is
+needed.
+
+V5 is the first reuse-enabled device acceptance run. It completed 900/900 frames
+without NvMap or TensorRT default-stream errors and reached 10.33 effective FPS.
+All 55 coast frames were valid with zero rejection. On valid one-branch frames,
+mean total latency was 111.663 ms versus 188.843 ms in V4. V5 process RSS settled
+near 999 MB versus 969 MB in V4, consistent with a small bounded persistent-buffer
+cost. Keep reuse enabled: the run establishes safe operation and a strong combined
+uplift. Do not assign the full difference to reuse, because capture latency,
+system CPU, power, temperature, and scene workload also differed. A reuse-off run
+in the same device state remains the attribution test, not a deployment blocker.
+
+### 8.6 Exact grasp median/MAD optimization
+
+On V5 valid one-branch frames, grasp selection is the largest remaining mean
+stage at 37.472 ms. Detection is 28.163 ms, depth fusion 19.843 ms, and
+segmentation 16.447 ms. The production Top-K value remains 256 because the prior
+accuracy study did not support 128 as a safe default.
+
+The selector now replaces two complete per-row sorts used for masked median and
+MAD with grouped `np.partition` calls. Patches with the same valid-depth count
+share the same lower/upper median indices. This changes neither the selected
+values nor the downstream float64 covariance/eigendecomposition. Local tests
+matched the legacy sort exactly across random masked patches and 20/20 noisy,
+missing-depth selector scenes. An alternating five-scene benchmark reduced local
+selector latency by 6.5-9.2%; treat that as feasibility evidence, not a Jetson
+whole-pipeline projection.
+
+After deployment, repeat the 900-frame collector command and compare valid
+one-branch `grasp_ms`, `total_ms`, target validity, rejection count, and coast
+validity against V5. Revert this internal change if selected pixel, depth, normal,
+or safety outcome differs.
 
 ## 9. Safety boundary
 

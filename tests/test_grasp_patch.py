@@ -7,6 +7,7 @@ from visual_deploy.geometry.grasp_patch import (
     _candidate_score,
     _chamfer_distance_to_background,
     _largest_component,
+    _masked_median,
     _plane_stats,
     select_grasp_patch,
 )
@@ -58,6 +59,24 @@ def test_compiled_component_and_distance_preprocessing_preserves_geometry():
     assert distance[10, 8] == pytest.approx(1.0)
     assert distance[17, 15] == pytest.approx(8.0)
     assert distance[0, 0] == 0.0
+
+
+@pytest.mark.parametrize("seed", [3, 11, 29])
+def test_masked_median_partition_matches_full_sort(seed):
+    rng = np.random.default_rng(seed)
+    values = rng.normal(size=(64, 17, 17)).astype(np.float32)
+    valid = rng.random(values.shape) < rng.uniform(0.55, 1.0, (values.shape[0], 1, 1))
+    counts = valid.sum(axis=(1, 2), dtype=np.int32)
+    flattened = np.where(valid, values, np.inf).reshape(values.shape[0], -1)
+    ordered = np.sort(flattened, axis=1)
+    rows = np.arange(ordered.shape[0])
+    lower = (counts - 1) // 2
+    upper = counts // 2
+    expected = ((ordered[rows, lower] + ordered[rows, upper]) * 0.5).astype(np.float32, copy=False)
+
+    actual = _masked_median(values, valid, counts)
+
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_vectorized_candidates_preserve_tilted_surface_reference():

@@ -128,11 +128,15 @@ def _candidate_score(
 
 def _masked_median(values: np.ndarray, valid: np.ndarray, counts: np.ndarray) -> np.ndarray:
     flattened = np.where(valid, values, np.inf).reshape(values.shape[0], -1)
-    ordered = np.sort(flattened, axis=1)
-    rows = np.arange(ordered.shape[0])
-    lower = (counts - 1) // 2
-    upper = counts // 2
-    return ((ordered[rows, lower] + ordered[rows, upper]) * 0.5).astype(np.float32, copy=False)
+    medians = np.empty(flattened.shape[0], dtype=np.float32)
+    for count in np.unique(counts):
+        indices = np.flatnonzero(counts == count)
+        lower = (int(count) - 1) // 2
+        upper = int(count) // 2
+        selected = np.partition(flattened[indices], (lower, upper), axis=1)
+        rows = np.arange(indices.size)
+        medians[indices] = (selected[rows, lower] + selected[rows, upper]) * 0.5
+    return medians
 
 
 def _iter_patch_candidates(

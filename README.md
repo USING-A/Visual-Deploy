@@ -175,6 +175,9 @@ empty or below-score Top-K result is retried exhaustively before the frame is
 rejected. Shadow verification is off in production; set its interval to `30`
 during commissioning to return the exhaustive result periodically and record
 pixel, depth, normal, and exact-match evidence in `candidates.jsonl`.
+The masked median and MAD calculations group patches by valid-depth count and use
+partial selection instead of fully sorting every patch. This preserves the same
+median values, Top-K bound, float64 plane fit, and safety thresholds.
 
 ## Automated threading profile collection
 
