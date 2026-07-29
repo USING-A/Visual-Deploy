@@ -67,3 +67,21 @@ def test_realtime_runner_passes_camera_config_without_truncation(monkeypatch):
             "hole_filling_filter": False,
         }
     ]
+
+
+def test_realsense_close_is_idempotent():
+    class FakePipeline:
+        def __init__(self):
+            self.stop_calls = 0
+
+        def stop(self):
+            self.stop_calls += 1
+
+    source = RealSenseSource.__new__(RealSenseSource)
+    source.pipeline = FakePipeline()
+    source._closed = False
+
+    source.close()
+    source.close()
+
+    assert source.pipeline.stop_calls == 1

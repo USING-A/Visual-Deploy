@@ -54,6 +54,7 @@ class RealSenseSource:
 
         depth_sensor = self.profile.get_device().first_depth_sensor()
         self.depth_scale_m = float(depth_sensor.get_depth_scale())
+        self._closed = False
 
     def __iter__(self) -> RealSenseSource:
         return self
@@ -105,6 +106,9 @@ class RealSenseSource:
         return frame
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self.pipeline.stop()
 
     def _filter_depth(self, depth_frame):

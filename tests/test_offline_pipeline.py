@@ -376,6 +376,36 @@ def test_pipeline_debug_and_recording_are_off_by_default(tmp_path):
     assert not pipeline.recorder.run_dir.exists()
 
 
+def test_pipeline_close_is_idempotent_and_releases_models(tmp_path):
+    class CloseableDetector(MockDetector):
+        def __init__(self):
+            super().__init__(0.9)
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    class CloseableSegmentor(MockSegmentor):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    detector = CloseableDetector()
+    segmentor = CloseableSegmentor()
+    pipeline = OfflinePipeline(detector, segmentor, config={"recording": {"output_root": str(tmp_path)}})
+
+    pipeline.close()
+    pipeline.close()
+
+    assert detector.close_calls == 1
+    assert segmentor.close_calls == 1
+    with pytest.raises(RuntimeError, match="closed"):
+        pipeline.process_frame(_frame())
+
+
 @pytest.mark.parametrize("value", [-1, 1.5, True])
 def test_pipeline_rejects_invalid_grasp_shadow_interval(value):
     with pytest.raises(ValueError, match="shadow_verify_every_n_frames"):

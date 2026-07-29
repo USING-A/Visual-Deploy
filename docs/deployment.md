@@ -24,6 +24,35 @@ built on another machine.
 
 The runtime accepts only `.onnx` or `.engine` model files.
 
+### Debug viewer shutdown and CUDA OOM recovery
+
+Exit `scripts/run_debug_viewer.py` with `q`, Esc, or the window-manager close
+button. The viewer detects all three paths and explicitly releases the camera,
+pipeline, ONNX/TensorRT sessions, native TensorRT handles, and cached CUDA
+allocations. Do not leave a viewer running before starting a profile collector.
+
+Confirm that no older deployment process remains:
+
+```bash
+pgrep -af 'collect_thread_profile|run_realtime|run_debug_viewer'
+```
+
+If TensorRT reports `NvMapMemAllocInternalTagged`, CUDA error 2, or out of
+memory, first stop only the listed stale project PID and inspect unified memory:
+
+```bash
+kill <PID>
+sleep 3
+free -h
+sudo timeout 3s tegrastats --interval 1000
+```
+
+Do not use `killall python`. If there is no project process but `lfb` remains at
+only one 1-4 MB block, save other work and reboot the Jetson before loading the
+engines again. Engine corruption is not indicated when failure occurs during
+`createInferRuntime`; a corrupt/incompatible engine fails later during engine
+deserialization.
+
 ```text
 YOLOv10 input       RGB float32 NCHW, 1 x 3 x 640 x 640
 YOLOv10 output      1 x 300 x 6, xyxy + confidence + class id
@@ -478,6 +507,13 @@ history-empty second target added only about 3.7 ms of depth fusion, isolating t
 five-frame temporal median/remap path as the remaining hotspot. The runtime now
 uses a bit-exact small-window median specialized for the configured five-frame
 history while retaining the same fusion parameters and invalid-depth behavior.
+
+The follow-up V3 report reached 6.21 effective FPS. Depth fusion fell to 20.87 ms
+mean, with 12.79 ms median and 5.24 ms remap cost, confirming the optimization on
+Orin. Its 75.83% valid-target rate must not be interpreted as a downstream
+regression: 203/840 analyzed frames had zero detector output and no frame was
+rejected by depth, segmentation, grasp, safety, or continuity. On non-empty
+detection frames, total processing averaged about 180.83 ms.
 
 To isolate the scheduler effect, collect two runs in the same device power mode
 and scene. First use the default config. Then copy `configs/deploy.yaml`, set only

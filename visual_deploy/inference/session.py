@@ -16,6 +16,8 @@ class InferenceSession(Protocol):
 
     def run(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]: ...
 
+    def close(self) -> None: ...
+
 
 class OnnxRuntimeSession:
     def __init__(self, model_path: str | PathLike[str], device: str = "cpu") -> None:
@@ -35,6 +37,7 @@ class OnnxRuntimeSession:
         else:
             providers = ["CPUExecutionProvider"]
         self.session = ort.InferenceSession(str(path), providers=providers)
+        self._closed = False
         self._input_names = tuple(item.name for item in self.session.get_inputs())
         self._output_names = tuple(item.name for item in self.session.get_outputs())
 
@@ -47,10 +50,20 @@ class OnnxRuntimeSession:
         return self._output_names
 
     def run(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        if self._closed:
+            raise RuntimeError("ONNX Runtime session is closed")
         _validate_input_names(inputs, self.input_names)
         arrays = {name: np.ascontiguousarray(inputs[name]) for name in self.input_names}
         outputs = self.session.run(list(self.output_names), arrays)
         return dict(zip(self.output_names, outputs))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        session = self.session
+        self.session = None
+        del session
 
 
 class TensorRTEngineSession:
@@ -84,6 +97,7 @@ class TensorRTEngineSession:
             raise RuntimeError(f"failed to create TensorRT execution context: {path}")
         self._tensor_api = hasattr(self.engine, "num_io_tensors")
         self._input_names, self._output_names = self._discover_io()
+        self._closed = False
 
     @property
     def input_names(self) -> tuple[str, ...]:
@@ -94,6 +108,8 @@ class TensorRTEngineSession:
         return self._output_names
 
     def run(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        if self._closed:
+            raise RuntimeError("TensorRT engine session is closed")
         _validate_input_names(inputs, self.input_names)
         if self._tensor_api:
             return self._run_tensor_api(inputs)
@@ -135,6 +151,19 @@ class TensorRTEngineSession:
             raise RuntimeError("TensorRT execute_async_v3 failed")
         stream.synchronize()
         return {name: buffers[name].detach().cpu().numpy() for name in self.output_names}
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for name in ("context", "engine", "runtime"):
+            resource = getattr(self, name, None)
+            setattr(self, name, None)
+            del resource
+        try:
+            self.torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _run_binding_api(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         torch = self.torch

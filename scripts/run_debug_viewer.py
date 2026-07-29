@@ -40,22 +40,26 @@ def main() -> None:
     config = load_config(config_path)
     config.setdefault("debug", {})["enabled"] = True
 
-    detector = _build_detector(config_path, config, use_mock_models=bool(args.use_mock_models))
-    segmentor = _build_segmentor(config_path, config, use_mock_models=bool(args.use_mock_models))
-    pipeline = OfflinePipeline(detector=detector, segmentor=segmentor, config=config)
-    source = _build_source(args, config)
-
-    paused = False
-    show_masks = True
-    show_depth = False
-    last_frame: DeployFrame | None = None
-    last_snapshot: DebugSnapshot | None = None
-    last_target: GraspTarget | None = None
-    last_fps = 0.0
-    previous_time = time.perf_counter()
-
-    cv2.namedWindow(args.window_name, cv2.WINDOW_NORMAL)
+    detector = None
+    segmentor = None
+    pipeline = None
+    source = None
     try:
+        detector = _build_detector(config_path, config, use_mock_models=bool(args.use_mock_models))
+        segmentor = _build_segmentor(config_path, config, use_mock_models=bool(args.use_mock_models))
+        pipeline = OfflinePipeline(detector=detector, segmentor=segmentor, config=config)
+        source = _build_source(args, config)
+
+        paused = False
+        show_masks = True
+        show_depth = False
+        last_frame: DeployFrame | None = None
+        last_snapshot: DebugSnapshot | None = None
+        last_target: GraspTarget | None = None
+        last_fps = 0.0
+        previous_time = time.perf_counter()
+
+        cv2.namedWindow(args.window_name, cv2.WINDOW_NORMAL)
         for idx, frame in enumerate(source):
             if not paused:
                 last_frame = frame
@@ -82,6 +86,8 @@ def main() -> None:
             cv2.imshow(args.window_name, view)
 
             key = cv2.waitKey(int(args.wait_ms)) & 0xFF
+            if _window_was_closed(args.window_name):
+                break
             if key in (27, ord("q")):
                 break
             if key == ord("p"):
@@ -95,9 +101,36 @@ def main() -> None:
             if args.max_frames is not None and idx + 1 >= args.max_frames:
                 break
     finally:
-        if hasattr(source, "close"):
-            source.close()
+        _destroy_windows()
+        if pipeline is not None:
+            _close_resources(source, pipeline)
+        else:
+            _close_resources(source, segmentor, detector)
+
+
+def _window_was_closed(window_name: str) -> bool:
+    try:
+        return cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1.0
+    except cv2.error:
+        return True
+
+
+def _destroy_windows() -> None:
+    try:
         cv2.destroyAllWindows()
+    except cv2.error:
+        pass
+
+
+def _close_resources(*resources: object | None) -> None:
+    for resource in resources:
+        close = getattr(resource, "close", None)
+        if not callable(close):
+            continue
+        try:
+            close()
+        except Exception as exc:
+            print(f"warning: failed to close {type(resource).__name__}: {exc}", file=sys.stderr)
 
 
 def _render_view(

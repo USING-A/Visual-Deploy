@@ -106,6 +106,7 @@ class OfflinePipeline:
         self.active_target_refresh_interval_frames = refresh_interval
         self._active_track_id: int | None = None
         self._processed_frame_count = 0
+        self._closed = False
 
         recording_cfg = self.config.get("recording", {})
         channels = {
@@ -133,6 +134,8 @@ class OfflinePipeline:
         self._last_event_frame_id: int | None = None
 
     def process_frame(self, frame: DeployFrame) -> GraspTarget:
+        if self._closed:
+            raise RuntimeError("pipeline is closed")
         self._processed_frame_count += 1
         frame_started = perf_counter()
         timings = {name: 0.0 for name in _TIMING_FIELDS}
@@ -254,6 +257,17 @@ class OfflinePipeline:
         self._update_debug(frame, eligible, target, candidates)
         self._finalize_frame(frame, eligible, candidates, rejections, target, timings, workload, frame_started)
         return target
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.depth_fusion.clear()
+        self.continuity_validator.clear()
+        for resource in (self.segmentor, self.detector):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
 
     def _schedule_tracks(
         self,

@@ -104,6 +104,9 @@ Sparse debug viewer:
 ```
 
 Viewer keys are `q`/`Esc` quit, `p` pause, `m` mask, `d` depth, and `s` snapshot.
+Closing the window with the window-manager `X` also terminates the loop. All
+exit paths explicitly close the RealSense source, model sessions, TensorRT
+contexts/engines/runtime objects, and the PyTorch CUDA cache.
 The viewer enables only the in-memory debug snapshot it needs.
 
 ## Runtime switches

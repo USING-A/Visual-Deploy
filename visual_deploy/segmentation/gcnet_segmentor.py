@@ -48,6 +48,11 @@ class GCNetSegmentor:
         mask_area = int(mask_256.sum())
         return SegmentResult(prob_256, mask_256, mask_area, _largest_component_ratio(mask_256))
 
+    def close(self) -> None:
+        close = getattr(self.session, "close", None)
+        if callable(close):
+            close()
+
     @staticmethod
     def _validate_inputs(color: np.ndarray, depth: np.ndarray) -> None:
         if color.shape != (256, 256, 3):

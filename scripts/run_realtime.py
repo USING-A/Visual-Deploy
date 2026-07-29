@@ -36,9 +36,12 @@ def main() -> None:
             if args.max_frames is not None and idx + 1 >= args.max_frames:
                 break
     finally:
-        if isinstance(frames, LatestFrameSource):
-            frames.close()
-        source.close()
+        try:
+            if isinstance(frames, LatestFrameSource):
+                frames.close()
+            source.close()
+        finally:
+            pipeline.close()
 
 
 def _build_source(config: dict) -> RealSenseSource:

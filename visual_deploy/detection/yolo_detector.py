@@ -69,6 +69,11 @@ class YoloV10Detector:
             )
         return detections
 
+    def close(self) -> None:
+        close = getattr(self.session, "close", None)
+        if callable(close):
+            close()
+
 
 def _preprocess(image: np.ndarray, image_size: int) -> tuple[np.ndarray, float, float, float]:
     height, width = image.shape[:2]
