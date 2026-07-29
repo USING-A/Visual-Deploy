@@ -195,6 +195,14 @@ def make_threading_recommendations(summary: Mapping[str, Any]) -> list[str]:
     if any(float(value) > 0.0 for value in dropped_metrics):
         recommendations.append("Dropped frames were observed; compare frame age before increasing any queue capacity.")
 
+    valid_target_rate = float(summary.get("valid_target_rate", 0.0) or 0.0)
+    raw_detection_mean = _stat(timings, "workload.raw_detections", "mean")
+    if valid_target_rate < 0.9 and raw_detection_mean is not None and raw_detection_mean < 0.9:
+        recommendations.append(
+            "Low target validity coincides with sparse detector output; inspect detector maximum confidence, "
+            "above-threshold candidates, and active-target coast counts before tuning downstream stages."
+        )
+
     queue_depths = {
         name.removeprefix("queue_depth."): stats
         for name, stats in timings.items()

@@ -146,11 +146,16 @@ runtime:
   active_target:
     enabled: true
     refresh_interval_frames: 30
+    max_coast_frames: 2
 ```
 
 Set `active_target.enabled: false` to recover the original all-target-per-frame
 behavior. Profiling exposes fast-path, fallback, refresh, and deferred-track
 counts under `timings.workload`.
+When YOLO briefly returns no eligible detection, only the previously accepted
+active track may coast for at most two frames. Its old bounding box is reused,
+but current-frame depth fusion, segmentation, grasp geometry, safety, and
+continuity checks still run. Set `max_coast_frames: 0` to disable this behavior.
 
 ## Grasp candidate search
 
@@ -215,6 +220,9 @@ Depth profiling now separates `depth_remap_ms` and `depth_median_ms`, and record
 `depth_history_frames` plus `depth_remap_calls` under `timings.workload`. These
 fields are emitted only through the existing profiling path; production defaults
 remain free of timing records.
+Detector profiling records output/finite/above-threshold candidate counts and
+maximum confidence. Coast usage is reported by `active_target_coast` and
+`coasting_tracks`.
 
 Threading overlaps only camera capture with the still-serialized perception
 pipeline. In the representative Orin report, capture was about 16 ms and

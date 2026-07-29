@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from os import PathLike
 from typing import Any
 
@@ -10,9 +11,19 @@ from visual_deploy.inference.session import InferenceSession, create_inference_s
 from visual_deploy.types import Detection
 
 
+@dataclass(frozen=True)
+class DetectionDiagnostics:
+    output_candidate_count: int
+    finite_confidence_count: int
+    above_threshold_count: int
+    max_confidence: float
+
+
 class MockDetector:
     def __init__(self, confidence: float = 0.9) -> None:
         self.confidence = float(confidence)
+        finite = int(np.isfinite(self.confidence))
+        self.last_diagnostics = DetectionDiagnostics(1, finite, finite, self.confidence if finite else 0.0)
 
     def infer(self, color_bgr: np.ndarray) -> list[Detection]:
         image = np.asarray(color_bgr)
@@ -43,6 +54,7 @@ class YoloV10Detector:
         self.session = session or create_inference_session(weights_path, device=device, backend=backend)
         if len(self.session.input_names) != 1:
             raise ValueError(f"YOLOv10 model must have one input, got {self.session.input_names}")
+        self.last_diagnostics = DetectionDiagnostics(0, 0, 0, 0.0)
 
     def infer(self, color_bgr: np.ndarray) -> list[Detection]:
         image = np.asarray(color_bgr)
@@ -52,6 +64,16 @@ class YoloV10Detector:
         raw = np.asarray(outputs[self.session.output_names[0]])
         if raw.ndim != 3 or raw.shape[0] != 1 or raw.shape[2] != 6:
             raise ValueError(f"YOLOv10 output must have shape (1, N, 6), got {raw.shape}")
+        confidence_values = raw[0, :, 4].astype(np.float32, copy=False)
+        finite_confidence = np.isfinite(confidence_values)
+        self.last_diagnostics = DetectionDiagnostics(
+            output_candidate_count=int(confidence_values.size),
+            finite_confidence_count=int(np.count_nonzero(finite_confidence)),
+            above_threshold_count=int(np.count_nonzero(finite_confidence & (confidence_values >= self.conf_threshold))),
+            max_confidence=float(np.max(confidence_values[finite_confidence]))
+            if np.any(finite_confidence)
+            else 0.0,
+        )
         height, width = image.shape[:2]
         detections: list[Detection] = []
         for x1, y1, x2, y2, confidence, class_id_raw in raw[0]:

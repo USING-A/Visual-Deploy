@@ -113,3 +113,18 @@ def test_dual_threshold_high_association_has_priority():
 def test_dual_threshold_rejects_reversed_thresholds():
     with pytest.raises(ValueError, match="low_threshold"):
         DualThresholdIoUTracker(high_threshold=0.1, low_threshold=0.5)
+
+
+def test_dual_threshold_tracker_exposes_only_bounded_confirmed_coast():
+    tracker = DualThresholdIoUTracker(high_threshold=0.5, low_threshold=0.1, max_lost=5, min_hits=1)
+    track_id = tracker.update([Detection((0, 0, 10, 10), 0, 0.9)])[0].track_id
+
+    tracker.update([])
+    first = tracker.get_coasting_track(track_id, max_coast_frames=2)
+    tracker.update([])
+    second = tracker.get_coasting_track(track_id, max_coast_frames=2)
+    tracker.update([])
+
+    assert first is not None and first.state == "coasting" and first.lost == 1
+    assert second is not None and second.lost == 2
+    assert tracker.get_coasting_track(track_id, max_coast_frames=2) is None

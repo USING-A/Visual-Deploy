@@ -136,9 +136,14 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
     assert timing["total_ms"] >= timing["detection_ms"]
     assert timing["workload"] == {
         "raw_detections": 1,
+        "detector_output_candidates": 1,
+        "detector_finite_confidence_candidates": 1,
+        "detector_above_threshold_candidates": 1,
+        "detector_max_confidence": 0.9,
         "eligible_detections": 1,
         "tracks": 1,
         "confirmed_tracks": 1,
+        "coasting_tracks": 0,
         "depth_fused_tracks": 1,
         "depth_history_frames": 1,
         "depth_remap_calls": 0,
@@ -151,8 +156,75 @@ def test_offline_pipeline_records_ranked_candidate_score_after_ranking(tmp_path)
         "active_target_fast_path": 0,
         "active_target_fallback": 0,
         "active_target_refresh": 0,
+        "active_target_coast": 0,
         "deferred_tracks": 0,
     }
+
+
+def test_active_target_coasts_for_two_zero_detection_frames_then_fails_closed(tmp_path):
+    class DropoutDetector:
+        def __init__(self):
+            self.calls = 0
+
+        def infer(self, color_bgr):
+            self.calls += 1
+            if self.calls in {2, 3, 4}:
+                return []
+            return [Detection((160.0, 120.0, 480.0, 360.0), 0, 0.9, "apple")]
+
+    segmentor = CountingSegmentor()
+    pipeline = OfflinePipeline(
+        DropoutDetector(),
+        segmentor,
+        config={
+            "runtime": {
+                "active_target": {
+                    "enabled": True,
+                    "refresh_interval_frames": 30,
+                    "max_coast_frames": 2,
+                }
+            },
+            "profiling": {"enabled": True},
+            "recording": {"enabled": True, "save_timings": True, "output_root": str(tmp_path)},
+        },
+    )
+
+    targets = [pipeline.process_frame(_frame(frame_id=i, timestamp_ms=i * 33.0)) for i in range(1, 6)]
+    records = [json.loads(line) for line in (pipeline.recorder.run_dir / "timings.jsonl").read_text().splitlines()]
+
+    assert [target.valid for target in targets] == [True, True, True, False, True]
+    assert targets[0].track_id == targets[1].track_id == targets[2].track_id == targets[4].track_id
+    assert [record["workload"]["active_target_coast"] for record in records] == [0, 1, 1, 0, 0]
+    assert [record["workload"]["coasting_tracks"] for record in records] == [0, 1, 1, 0, 0]
+    assert segmentor.calls == 4
+
+
+def test_active_target_coast_stops_after_current_frame_downstream_failure(tmp_path):
+    class OneThenEmptyDetector:
+        def __init__(self):
+            self.calls = 0
+
+        def infer(self, color_bgr):
+            self.calls += 1
+            if self.calls == 1:
+                return [Detection((160.0, 120.0, 480.0, 360.0), 0, 0.9, "apple")]
+            return []
+
+    segmentor = CountingSegmentor(empty_on_calls={2})
+    pipeline = OfflinePipeline(
+        OneThenEmptyDetector(),
+        segmentor,
+        config={"runtime": {"active_target": {"enabled": True, "max_coast_frames": 2}}},
+    )
+
+    first = pipeline.process_frame(_frame(frame_id=1, timestamp_ms=33.0))
+    failed_coast = pipeline.process_frame(_frame(frame_id=2, timestamp_ms=66.0))
+    no_second_coast = pipeline.process_frame(_frame(frame_id=3, timestamp_ms=99.0))
+
+    assert first.valid is True
+    assert failed_coast.valid is False
+    assert no_second_coast.valid is False
+    assert segmentor.calls == 2
 
 
 def test_active_target_fast_path_skips_deferred_track_and_periodically_refreshes(tmp_path):
@@ -429,3 +501,13 @@ def test_pipeline_rejects_invalid_active_target_refresh_interval(value):
 def test_pipeline_rejects_non_mapping_active_target_config():
     with pytest.raises(ValueError, match="active_target"):
         OfflinePipeline(MockDetector(0.9), MockSegmentor(), config={"runtime": {"active_target": True}})
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True])
+def test_pipeline_rejects_invalid_active_target_max_coast_frames(value):
+    with pytest.raises(ValueError, match="max_coast_frames"):
+        OfflinePipeline(
+            MockDetector(0.9),
+            MockSegmentor(),
+            config={"runtime": {"active_target": {"max_coast_frames": value}}},
+        )

@@ -38,9 +38,14 @@ _TIMING_FIELDS = (
 
 _WORKLOAD_FIELDS = (
     "raw_detections",
+    "detector_output_candidates",
+    "detector_finite_confidence_candidates",
+    "detector_above_threshold_candidates",
+    "detector_max_confidence",
     "eligible_detections",
     "tracks",
     "confirmed_tracks",
+    "coasting_tracks",
     "depth_fused_tracks",
     "depth_history_frames",
     "depth_remap_calls",
@@ -53,6 +58,7 @@ _WORKLOAD_FIELDS = (
     "active_target_fast_path",
     "active_target_fallback",
     "active_target_refresh",
+    "active_target_coast",
     "deferred_tracks",
 )
 
@@ -104,6 +110,10 @@ class OfflinePipeline:
         if isinstance(refresh_interval, bool) or not isinstance(refresh_interval, int) or refresh_interval <= 0:
             raise ValueError("runtime.active_target.refresh_interval_frames must be a positive integer")
         self.active_target_refresh_interval_frames = refresh_interval
+        max_coast_frames = active_target_cfg.get("max_coast_frames", 0)
+        if isinstance(max_coast_frames, bool) or not isinstance(max_coast_frames, int) or max_coast_frames < 0:
+            raise ValueError("runtime.active_target.max_coast_frames must be a non-negative integer")
+        self.active_target_max_coast_frames = max_coast_frames
         self._active_track_id: int | None = None
         self._processed_frame_count = 0
         self._closed = False
@@ -144,6 +154,7 @@ class OfflinePipeline:
         stage_started = perf_counter()
         detections = self.detector.infer(frame.color_bgr)
         workload["raw_detections"] = len(detections)
+        _attach_detector_diagnostics(self.detector, workload)
         timings["detection_ms"] += _elapsed_ms(stage_started)
         stage_started = perf_counter()
         eligible = [
@@ -153,8 +164,17 @@ class OfflinePipeline:
         ]
         workload["eligible_detections"] = len(eligible)
         tracks = self.tracker.update(eligible)
+        if not eligible and self.active_target_enabled and self._active_track_id is not None:
+            coasting = self.tracker.get_coasting_track(
+                self._active_track_id,
+                self.active_target_max_coast_frames,
+            )
+            if coasting is not None:
+                tracks.append(coasting)
+                workload["active_target_coast"] = 1
         workload["tracks"] = len(tracks)
         workload["confirmed_tracks"] = sum(track.state == "confirmed" for track in tracks)
+        workload["coasting_tracks"] = sum(track.state == "coasting" for track in tracks)
         timings["tracking_ms"] += _elapsed_ms(stage_started)
         stage_started = perf_counter()
         self.recorder.write_detection(
@@ -169,9 +189,9 @@ class OfflinePipeline:
         rejections = [
             _rejection_record(track, "tracking", "track_not_confirmed")
             for track in tracks
-            if track.state != "confirmed"
+            if track.state not in {"confirmed", "coasting"}
         ]
-        confirmed_tracks = [track for track in tracks if track.state == "confirmed"]
+        confirmed_tracks = [track for track in tracks if track.state in {"confirmed", "coasting"}]
         primary_tracks, deferred_tracks, fast_path, refresh = self._schedule_tracks(confirmed_tracks)
         workload["active_target_fast_path"] = int(fast_path)
         workload["active_target_refresh"] = int(refresh)
@@ -337,7 +357,7 @@ class OfflinePipeline:
         frame: DeployFrame,
         track: Track,
         timings: dict[str, float],
-        workload: dict[str, int],
+        workload: dict[str, int | float],
     ) -> tuple[_PipelineCandidate | None, dict[str, Any] | None]:
         height, width = frame.color_bgr.shape[:2]
         roi_size = 256
@@ -429,7 +449,7 @@ class OfflinePipeline:
         rejections: list[dict[str, Any]],
         target: GraspTarget,
         timings: dict[str, float],
-        workload: dict[str, int],
+        workload: dict[str, int | float],
         frame_started: float,
     ) -> None:
         diagnostic_started = perf_counter()
@@ -589,6 +609,16 @@ def _attach_depth_stats(
     for detection in detections:
         detection.depth_stats = extractor.extract(depth_mm, detection.bbox_xyxy)
     return detections
+
+
+def _attach_detector_diagnostics(detector: Any, workload: dict[str, int | float]) -> None:
+    diagnostics = getattr(detector, "last_diagnostics", None)
+    if diagnostics is None:
+        return
+    workload["detector_output_candidates"] = int(diagnostics.output_candidate_count)
+    workload["detector_finite_confidence_candidates"] = int(diagnostics.finite_confidence_count)
+    workload["detector_above_threshold_candidates"] = int(diagnostics.above_threshold_count)
+    workload["detector_max_confidence"] = float(diagnostics.max_confidence)
 
 
 def _crop_resize(color_bgr: np.ndarray, depth_mm: np.ndarray, roi: RoiTransform) -> tuple[np.ndarray, np.ndarray]:

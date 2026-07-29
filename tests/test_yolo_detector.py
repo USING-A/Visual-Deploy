@@ -58,6 +58,21 @@ def test_yolov10_filters_low_scores_and_invalid_boxes():
     output[0, 1] = [20, 20, 10, 10, 0.9, 0]
     detector = YoloV10Detector("unused.onnx", conf_threshold=0.5, session=FakeYoloSession(output))
     assert detector.infer(np.zeros((640, 640, 3), dtype=np.uint8)) == []
+    assert detector.last_diagnostics.output_candidate_count == 300
+    assert detector.last_diagnostics.above_threshold_count == 1
+    assert detector.last_diagnostics.max_confidence == pytest.approx(0.9)
+
+
+def test_yolov10_diagnostics_distinguish_below_threshold_output():
+    output = np.zeros((1, 3, 6), dtype=np.float32)
+    output[0, :, 4] = [0.1, 0.3, 0.49]
+    detector = YoloV10Detector("unused.onnx", conf_threshold=0.5, session=FakeYoloSession(output))
+
+    assert detector.infer(np.zeros((640, 640, 3), dtype=np.uint8)) == []
+    assert detector.last_diagnostics.output_candidate_count == 3
+    assert detector.last_diagnostics.finite_confidence_count == 3
+    assert detector.last_diagnostics.above_threshold_count == 0
+    assert detector.last_diagnostics.max_confidence == pytest.approx(0.49)
 
 
 def test_yolov10_rejects_unexpected_output_shape():

@@ -300,6 +300,29 @@ class DualThresholdIoUTracker:
                 remaining.remove(detection_index)
         return matches
 
+    def get_coasting_track(self, track_id: int, max_coast_frames: int) -> Track | None:
+        if isinstance(max_coast_frames, bool) or not isinstance(max_coast_frames, int) or max_coast_frames < 0:
+            raise ValueError("max_coast_frames must be a non-negative integer")
+        track = self._tracks.get(int(track_id))
+        if (
+            track is None
+            or track.hits < self.min_hits
+            or track.lost <= 0
+            or track.lost > min(max_coast_frames, self.max_lost)
+        ):
+            return None
+        return Track(
+            track_id=track.track_id,
+            bbox_xyxy=track.bbox_xyxy,
+            class_id=track.class_id,
+            confidence=track.confidence,
+            label=track.label,
+            state="coasting",
+            hits=track.hits,
+            lost=track.lost,
+            weighted_confidence=track.confidence,
+        )
+
     def _to_output(self, track: _TrackState, detection: Detection) -> Track:
         return Track(
             track_id=track.track_id,

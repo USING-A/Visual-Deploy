@@ -368,6 +368,7 @@ runtime:
   active_target:
     enabled: true
     refresh_interval_frames: 30
+    max_coast_frames: 2
 ```
 
 Pass `--sync` to `scripts/run_realtime.py` for the legacy synchronous comparison.
@@ -394,6 +395,24 @@ safety, and continuity result. Any failure immediately runs the deferred tracks
 in the same frame. A periodic full refresh prevents indefinite preference for a
 target that is valid but no longer globally best. Deferred-track depth history is
 cleared so a later fallback cannot fuse stale ROI depth.
+
+If an accepted active target is followed by a complete detector dropout, the
+tracker may expose that same track as `coasting` for at most
+`max_coast_frames`. Coasting never creates a track, never selects another stale
+track, and is disabled with `0`. The previous bounding box only defines the ROI;
+the target must pass current-frame depth, segmentation, grasp, safety, and
+continuity checks. A third consecutive miss fails closed with the production
+value of `2`.
+
+For dropout diagnosis, inspect these workload fields:
+
+- `detector_output_candidates` and `detector_finite_confidence_candidates`;
+- `detector_above_threshold_candidates` and `detector_max_confidence`;
+- `active_target_coast` and `coasting_tracks`.
+
+If engine candidates remain present but `detector_max_confidence` stays below
+the configured threshold, investigate confidence calibration. If output rows or
+finite confidences disappear, investigate the engine/runtime path instead.
 
 ### 8.1 Exact Jetson comparison procedure
 
