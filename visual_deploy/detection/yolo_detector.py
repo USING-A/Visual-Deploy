@@ -43,6 +43,7 @@ class YoloV10Detector:
         backend: str = "auto",
         image_size: int = 640,
         class_names: dict[int, str] | None = None,
+        reuse_buffers: bool = True,
         *,
         session: InferenceSession | None = None,
     ) -> None:
@@ -51,7 +52,12 @@ class YoloV10Detector:
         if self.image_size <= 0:
             raise ValueError("image_size must be positive")
         self.class_names = class_names or {0: "apple"}
-        self.session = session or create_inference_session(weights_path, device=device, backend=backend)
+        self.session = session or create_inference_session(
+            weights_path,
+            device=device,
+            backend=backend,
+            reuse_buffers=reuse_buffers,
+        )
         if len(self.session.input_names) != 1:
             raise ValueError(f"YOLOv10 model must have one input, got {self.session.input_names}")
         self.last_diagnostics = DetectionDiagnostics(0, 0, 0, 0.0)

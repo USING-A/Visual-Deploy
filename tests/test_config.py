@@ -36,8 +36,10 @@ def test_load_default_config_has_runtime_sections():
     }
     assert cfg["detection"]["backend"] == "tensorrt"
     assert cfg["detection"]["weights"].endswith(".engine")
+    assert cfg["detection"]["reuse_buffers"] is True
     assert cfg["segmentation"]["backend"] == "tensorrt"
     assert cfg["segmentation"]["weights"].endswith(".engine")
+    assert cfg["segmentation"]["reuse_buffers"] is True
     assert cfg["tracking"]["high_conf_threshold"] == 0.50
     assert cfg["tracking"]["low_conf_threshold"] == 0.10
     assert cfg["tracking"]["min_hits"] == 1

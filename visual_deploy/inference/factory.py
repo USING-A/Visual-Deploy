@@ -21,6 +21,7 @@ def build_detector(config_path: Path, config: dict[str, Any]) -> YoloV10Detector
         backend=str(cfg.get("backend", "auto")),
         image_size=int(cfg.get("image_size", 640)),
         class_names=names,
+        reuse_buffers=_reuse_buffers(cfg),
     )
 
 
@@ -34,4 +35,12 @@ def build_segmentor(config_path: Path, config: dict[str, Any]) -> GCNetSegmentor
         device=str(cfg.get("device", "cpu")),
         backend=str(cfg.get("backend", "auto")),
         threshold=float(cfg.get("threshold", 0.5)),
+        reuse_buffers=_reuse_buffers(cfg),
     )
+
+
+def _reuse_buffers(config: dict[str, Any]) -> bool:
+    value = config.get("reuse_buffers", True)
+    if not isinstance(value, bool):
+        raise ValueError("reuse_buffers must be a boolean")
+    return value

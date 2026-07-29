@@ -74,8 +74,16 @@ class TensorRTEngineSession:
     required on Jetson.
     """
 
-    def __init__(self, model_path: str | PathLike[str], device: str = "cuda:0") -> None:
+    def __init__(
+        self,
+        model_path: str | PathLike[str],
+        device: str = "cuda:0",
+        *,
+        reuse_buffers: bool = True,
+    ) -> None:
         path = _validate_model_path(model_path, ".engine")
+        if not isinstance(reuse_buffers, bool):
+            raise ValueError("reuse_buffers must be a boolean")
         try:
             import tensorrt as trt
             import torch
@@ -97,6 +105,12 @@ class TensorRTEngineSession:
             raise RuntimeError(f"failed to create TensorRT execution context: {path}")
         self._tensor_api = hasattr(self.engine, "num_io_tensors")
         self._input_names, self._output_names = self._discover_io()
+        self.reuse_buffers = reuse_buffers
+        self._buffer_signature: tuple[tuple[str, tuple[int, ...], str], ...] | None = None
+        self._buffers: dict[str, Any] = {}
+        self._binding_addresses: list[int] | None = None
+        self._execution_stream: Any | None = None
+        self._buffer_rebuild_count = 0
         self._closed = False
 
     @property
@@ -107,12 +121,20 @@ class TensorRTEngineSession:
     def output_names(self) -> tuple[str, ...]:
         return self._output_names
 
+    @property
+    def buffer_rebuild_count(self) -> int:
+        return self._buffer_rebuild_count
+
     def run(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         if self._closed:
             raise RuntimeError("TensorRT engine session is closed")
         _validate_input_names(inputs, self.input_names)
         if self._tensor_api:
+            if self.reuse_buffers:
+                return self._run_tensor_api_reused(inputs)
             return self._run_tensor_api(inputs)
+        if self.reuse_buffers:
+            return self._run_binding_api_reused(inputs)
         return self._run_binding_api(inputs)
 
     def _discover_io(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -152,10 +174,57 @@ class TensorRTEngineSession:
         stream.synchronize()
         return {name: buffers[name].detach().cpu().numpy() for name in self.output_names}
 
+    def _run_tensor_api_reused(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        arrays = _contiguous_arrays(inputs, self.input_names)
+        signature = _input_signature(arrays, self.input_names)
+        if signature != self._buffer_signature:
+            self._clear_buffer_cache()
+            buffers: dict[str, Any] = {}
+            for name in self.input_names:
+                array = arrays[name]
+                expected_dtype = np.dtype(self.trt.nptype(self.engine.get_tensor_dtype(name)))
+                _validate_input_dtype(name, array.dtype, expected_dtype)
+                if not self.context.set_input_shape(name, tuple(array.shape)):
+                    raise ValueError(f"TensorRT rejected input shape for {name}: {tuple(array.shape)}")
+                buffers[name] = self.torch.empty(
+                    tuple(array.shape),
+                    dtype=_torch_dtype(expected_dtype, self.torch),
+                    device=self.device,
+                )
+            for name in self.output_names:
+                shape = tuple(self.context.get_tensor_shape(name))
+                if any(int(value) < 0 for value in shape):
+                    raise RuntimeError(f"unresolved TensorRT output shape for {name}: {shape}")
+                dtype = _torch_dtype(self.trt.nptype(self.engine.get_tensor_dtype(name)), self.torch)
+                buffers[name] = self.torch.empty(shape, dtype=dtype, device=self.device)
+            for name, tensor in buffers.items():
+                _require_trt_success(
+                    self.context.set_tensor_address(name, int(tensor.data_ptr())),
+                    f"set_tensor_address({name})",
+                )
+            self._buffers = buffers
+            self._buffer_signature = signature
+            self._buffer_rebuild_count += 1
+
+        stream = self._reused_execution_stream()
+        with self.torch.cuda.stream(stream):
+            for name in self.input_names:
+                self._buffers[name].copy_(self.torch.from_numpy(arrays[name]))
+            if not self.context.execute_async_v3(stream_handle=stream.cuda_stream):
+                raise RuntimeError("TensorRT execute_async_v3 failed")
+        stream.synchronize()
+        return {name: self._buffers[name].detach().cpu().numpy() for name in self.output_names}
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        buffers = getattr(self, "_buffers", None)
+        addresses = getattr(self, "_binding_addresses", None)
+        stream = getattr(self, "_execution_stream", None)
+        self._clear_buffer_cache()
+        self._execution_stream = None
+        del buffers, addresses, stream
         for name in ("context", "engine", "runtime"):
             resource = getattr(self, name, None)
             setattr(self, name, None)
@@ -194,12 +263,70 @@ class TensorRTEngineSession:
         stream.synchronize()
         return {name: buffers[name].detach().cpu().numpy() for name in self.output_names}
 
+    def _run_binding_api_reused(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        arrays = _contiguous_arrays(inputs, self.input_names)
+        signature = _input_signature(arrays, self.input_names)
+        if signature != self._buffer_signature:
+            self._clear_buffer_cache()
+            buffers: dict[str, Any] = {}
+            addresses = [0] * self.engine.num_bindings
+            for name in self.input_names:
+                index = self.engine.get_binding_index(name)
+                array = arrays[name]
+                expected_dtype = np.dtype(self.trt.nptype(self.engine.get_binding_dtype(index)))
+                _validate_input_dtype(name, array.dtype, expected_dtype)
+                if -1 in tuple(self.engine.get_binding_shape(index)):
+                    _require_trt_success(
+                        self.context.set_binding_shape(index, tuple(array.shape)),
+                        f"set_binding_shape({name})",
+                    )
+                tensor = self.torch.empty(
+                    tuple(array.shape),
+                    dtype=_torch_dtype(expected_dtype, self.torch),
+                    device=self.device,
+                )
+                buffers[name] = tensor
+                addresses[index] = int(tensor.data_ptr())
+            for name in self.output_names:
+                index = self.engine.get_binding_index(name)
+                shape = tuple(self.context.get_binding_shape(index))
+                if any(int(value) < 0 for value in shape):
+                    raise RuntimeError(f"unresolved TensorRT output shape for {name}: {shape}")
+                dtype = _torch_dtype(self.trt.nptype(self.engine.get_binding_dtype(index)), self.torch)
+                tensor = self.torch.empty(shape, dtype=dtype, device=self.device)
+                buffers[name] = tensor
+                addresses[index] = int(tensor.data_ptr())
+            self._buffers = buffers
+            self._binding_addresses = addresses
+            self._buffer_signature = signature
+            self._buffer_rebuild_count += 1
+
+        stream = self._reused_execution_stream()
+        with self.torch.cuda.stream(stream):
+            for name in self.input_names:
+                self._buffers[name].copy_(self.torch.from_numpy(arrays[name]))
+            if not self.context.execute_async_v2(self._binding_addresses, stream.cuda_stream):
+                raise RuntimeError("TensorRT execute_async_v2 failed")
+        stream.synchronize()
+        return {name: self._buffers[name].detach().cpu().numpy() for name in self.output_names}
+
+    def _reused_execution_stream(self) -> Any:
+        if self._execution_stream is None:
+            self._execution_stream = self.torch.cuda.Stream(device=self.device)
+        return self._execution_stream
+
+    def _clear_buffer_cache(self) -> None:
+        self._buffer_signature = None
+        self._buffers = {}
+        self._binding_addresses = None
+
 
 def create_inference_session(
     model_path: str | PathLike[str],
     *,
     device: str = "cpu",
     backend: str = "auto",
+    reuse_buffers: bool = True,
 ) -> InferenceSession:
     path = Path(model_path)
     selected = str(backend).lower()
@@ -208,7 +335,7 @@ def create_inference_session(
     if selected == "onnxruntime":
         return OnnxRuntimeSession(path, device=device)
     if selected == "tensorrt":
-        return TensorRTEngineSession(path, device=device)
+        return TensorRTEngineSession(path, device=device, reuse_buffers=reuse_buffers)
     raise ValueError("backend must be auto, onnxruntime, or tensorrt; model must end in .onnx or .engine")
 
 
@@ -224,6 +351,22 @@ def _validate_model_path(model_path: str | PathLike[str], expected_suffix: str) 
 def _validate_input_names(inputs: dict[str, np.ndarray], expected: tuple[str, ...]) -> None:
     if set(inputs) != set(expected):
         raise ValueError(f"model inputs must be {list(expected)}, got {sorted(inputs)}")
+
+
+def _contiguous_arrays(inputs: dict[str, np.ndarray], names: tuple[str, ...]) -> dict[str, np.ndarray]:
+    return {name: np.ascontiguousarray(inputs[name]) for name in names}
+
+
+def _input_signature(
+    arrays: dict[str, np.ndarray],
+    names: tuple[str, ...],
+) -> tuple[tuple[str, tuple[int, ...], str], ...]:
+    return tuple((name, tuple(arrays[name].shape), arrays[name].dtype.str) for name in names)
+
+
+def _validate_input_dtype(name: str, actual: np.dtype[Any], expected: np.dtype[Any]) -> None:
+    if np.dtype(actual) != np.dtype(expected):
+        raise TypeError(f"TensorRT input {name} expects {np.dtype(expected)}, got {np.dtype(actual)}")
 
 
 def _cuda_device_id(device: str) -> int:

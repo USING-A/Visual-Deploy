@@ -251,8 +251,15 @@ python3 scripts/build_tensorrt_engines.py \
 ```
 
 6. Verify the engine paths in `configs/deploy.yaml`; both production backends are
-   already set to `tensorrt`.
+   already set to `tensorrt`, and both model sections enable
+   `reuse_buffers: true`.
 7. Run a fixed offline RGB-D check before connecting the realtime camera.
+
+With TensorRT buffer reuse enabled, each fixed-shape model allocates and binds
+its CUDA input/output buffers once, then copies new inputs into the same device
+storage. A shape or dtype change rebuilds the cache. Set `reuse_buffers: false`
+under both `detection` and `segmentation` for immediate rollback to per-call
+allocation.
 
 TensorRT engines must not be copied between different TensorRT/JetPack/device
 stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md).

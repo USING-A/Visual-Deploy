@@ -21,6 +21,7 @@ detection:
   class_names: {0: apple}
   conf_threshold: 0.50
   device: cpu
+  reuse_buffers: true
 
 tracking:
   high_conf_threshold: 0.50
@@ -38,6 +39,7 @@ segmentation:
   backend: onnxruntime
   threshold: 0.5
   device: cpu
+  reuse_buffers: true
   input_color_order: bgr
   depth_input_unit: mm
 

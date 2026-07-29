@@ -534,6 +534,15 @@ regression: 203/840 analyzed frames had zero detector output and no frame was
 rejected by depth, segmentation, grasp, safety, or continuity. On non-empty
 detection frames, total processing averaged about 180.83 ms.
 
+V4 then exercised the current code on a persistent two-apple scene. It completed
+all 900 requested frames; after excluding 60 warmup frames, validity was 840/840,
+downstream rejections were zero, effective FPS was 4.98, and expensive downstream
+work averaged 1.030 branches per frame. The detector averaged 1.931
+above-threshold candidates per frame, so `active_target_coast` and
+`coasting_tracks` both remained zero. V4 therefore confirms that the coast change
+did not regress the stable two-target route, but it is not direct evidence that
+the coast branch improves dropout frames.
+
 To isolate the scheduler effect, collect two runs in the same device power mode
 and scene. First use the default config. Then copy `configs/deploy.yaml`, set only
 `runtime.active_target.enabled: false`, and collect the same frame count with a
@@ -567,7 +576,7 @@ the paired scheduler-on/off measurement above as the current acceptance evidence
 Continue in this order after the device comparison:
 
 1. remove the Orin compute-capability warning with the JetPack-matched PyTorch build;
-2. reuse TensorRT input/output CUDA buffers and narrow stream synchronization;
+2. device-validate the TensorRT buffer reuse implemented in section 8.5;
 3. reduce depth remap/median allocation cost while preserving exact grasp output;
 4. verify active-target scheduling on the two-apple scene and tune only the full-refresh interval;
 5. evaluate INT8 or dynamic batching only as a separate accuracy-gated experiment.
@@ -575,6 +584,52 @@ Continue in this order after the device comparison:
 Do not add more CPU threads merely to increase the thread count. Tracker and depth
 history must keep one writer, and the two GPU models should remain serialized until
 device profiling proves that safe overlap exists.
+
+### 8.5 TensorRT fixed-buffer reuse
+
+The production configuration enables `reuse_buffers: true` independently under
+`detection` and `segmentation`. For the fixed YOLOv10 and 256 x 256 GCNet engine
+inputs, the TensorRT session now:
+
+1. allocates input/output CUDA tensors and binds their addresses on the first call;
+2. copies each new NumPy input into the existing input tensor;
+3. enqueues inference on one session-owned non-default CUDA stream;
+4. synchronizes that stream and returns a fresh CPU NumPy output;
+5. rebuilds all buffers and addresses if an input shape or dtype changes.
+
+This preserves the existing output lifetime and serialized model contract while
+removing steady-state CUDA tensor allocation and TensorRT address binding. Expect
+slightly higher persistent CUDA memory while the process is alive, but less
+allocator churn and fragmentation. `pipeline.close()` releases the cache, stream,
+native TensorRT objects, and PyTorch CUDA cache.
+
+For rollback, set both model switches to false:
+
+```yaml
+detection:
+  reuse_buffers: false
+segmentation:
+  reuse_buffers: false
+```
+
+Run a paired 900-frame device profile in the same scene after synchronizing this
+commit. The reuse-enabled command is:
+
+```bash
+python scripts/collect_thread_profile.py \
+  --mode realtime \
+  --config configs/deploy.yaml \
+  --frames 900 \
+  --warmup-frames 60 \
+  --session-name tensorrt-buffer-reuse-on
+```
+
+Then copy the config, disable both switches in that copy, and rerun with
+`--session-name tensorrt-buffer-reuse-off`. Accept reuse when the run completes,
+valid-target rate does not regress, process memory reaches a stable plateau, and
+TensorRT stage latency or total latency improves. The current Windows tests use
+fake TensorRT 8/10 APIs; the Jetson profile remains the real engine acceptance
+gate.
 
 ## 9. Safety boundary
 

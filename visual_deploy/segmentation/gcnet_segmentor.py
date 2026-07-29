@@ -24,13 +24,19 @@ class GCNetSegmentor:
         device: str = "cpu",
         backend: str = "auto",
         threshold: float = 0.5,
+        reuse_buffers: bool = True,
         *,
         session: InferenceSession | None = None,
     ) -> None:
         self.threshold = float(threshold)
         if not np.isfinite(self.threshold) or not 0.0 <= self.threshold <= 1.0:
             raise ValueError("threshold must be finite and in [0.0, 1.0]")
-        self.session = session or create_inference_session(model_path, device=device, backend=backend)
+        self.session = session or create_inference_session(
+            model_path,
+            device=device,
+            backend=backend,
+            reuse_buffers=reuse_buffers,
+        )
         if set(self.session.input_names) != {"bgr", "depth_mm"}:
             raise ValueError(f"GCNet inputs must be bgr and depth_mm, got {self.session.input_names}")
         if "prob" not in self.session.output_names:
