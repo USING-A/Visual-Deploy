@@ -266,6 +266,9 @@ allocation.
 
 TensorRT engines must not be copied between different TensorRT/JetPack/device
 stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md).
+When a separate agent operates the target board without changing its software
+environment, use the guarded, evidence-producing procedure in
+[docs/jetson_board_agent_no_env_fix.md](docs/jetson_board_agent_no_env_fix.md).
 
 ## Verification
 
