@@ -1,0 +1,99 @@
+camera:
+  width: 640
+  height: 480
+  fps: 30
+  align_to_color: true
+  spatial_filter: true
+  temporal_filter: false
+  hole_filling_filter: false
+runtime:
+  threaded_capture: true
+  active_target:
+    enabled: true
+    refresh_interval_frames: 30
+    max_coast_frames: 2
+detection:
+  weights: /home/liancheng/Higgins/Visual-Deploy/runs/device_engines/orin_nx/yolov10_sam_robust_standard.engine
+  backend: tensorrt
+  image_size: 640
+  class_names:
+    0: apple
+  conf_threshold: 0.5
+  device: cuda:0
+  reuse_buffers: true
+tracking:
+  high_conf_threshold: 0.5
+  low_conf_threshold: 0.1
+  iou_threshold: 0.3
+  min_hits: 1
+  max_lost: 30
+roi:
+  size: 256
+  pad_ratio: 0.2
+segmentation:
+  weights: /home/liancheng/Higgins/Visual-Deploy/runs/device_engines/orin_nx/rgbd_gcnet_l03_robustft.engine
+  backend: tensorrt
+  threshold: 0.5
+  device: cuda:0
+  reuse_buffers: true
+  input_color_order: bgr
+  depth_input_unit: mm
+depth_fusion:
+  window_size: 5
+  method: median
+  min_depth_mm: 100
+  max_depth_mm: 5000
+  min_valid_ratio: 0.3
+  min_roi_iou: 0.5
+grasp:
+  patch_radius_px: 8
+  stride_px: 4
+  min_component_area_px: 64
+  min_valid_depth_ratio: 0.7
+  min_valid_depth_count: 20
+  max_plane_rmse_m: 0.006
+  max_depth_mad_m: 0.012
+  min_score: 0.0
+  candidate_top_k: 256
+  exhaustive_fallback: true
+  shadow_verify_every_n_frames: 0
+ranking:
+  weights:
+    grasp_score: 0.45
+    depth_valid_score: 0.2
+    track_confidence: 0.15
+    track_stability: 0.1
+    mask_quality_score: 0.1
+safety:
+  enabled: true
+  min_target_score: 0.8
+  min_track_confidence: 0.2
+  min_mask_quality: 0.6
+  max_normal_tilt_deg: 35.0
+  max_pixel_step_px: 40.0
+  max_depth_step_mm: 30.0
+  max_history_age_ms: 1000.0
+profiling:
+  enabled: true
+debug:
+  enabled: false
+diagnostics:
+  enabled: false
+recording:
+  enabled: true
+  output_root: /home/liancheng/Higgins/Visual-Deploy/runs/thread_profiles/v8_gate_b_smoke_before/pipeline_runs
+  save_detections: false
+  save_candidates: false
+  save_targets: false
+  save_errors: false
+  save_timings: true
+  save_events: false
+  save_frames: false
+  save_depth: false
+  save_masks: false
+  save_overlays: false
+  save_event_artifacts: false
+  event_stages:
+  - safety
+  - continuity
+  event_cooldown_frames: 15

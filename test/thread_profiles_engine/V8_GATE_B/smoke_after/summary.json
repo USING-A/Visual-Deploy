@@ -1,0 +1,644 @@
+{
+  "frame_count_total": 60,
+  "warmup_frames_excluded": 10,
+  "frame_count_analyzed": 50,
+  "target_fps": 30.0,
+  "target_frame_interval_ms": 33.333333333333336,
+  "valid_target_rate": 0.0,
+  "effective_fps": 28.30624840712132,
+  "timings": {
+    "capture_ms": {
+      "count": 50.0,
+      "mean": 33.00488154068589,
+      "min": 24.072629999369383,
+      "p50": 33.377554999664426,
+      "p95": 38.41111830007284,
+      "p99": 40.98596726153045,
+      "max": 42.21534100174904
+    },
+    "depth_fusion_ms": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "depth_median_ms": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "depth_remap_ms": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "detection_ms": {
+      "count": 50.0,
+      "mean": 22.874171740186284,
+      "min": 12.5984240003163,
+      "p50": 20.36666999993031,
+      "p95": 37.72616350161115,
+      "p99": 40.6503468403389,
+      "max": 41.257155000494095
+    },
+    "diagnostic_ms": {
+      "count": 50.0,
+      "mean": 0.006830660131527111,
+      "min": 0.004864999937126413,
+      "p50": 0.006784999641240574,
+      "p95": 0.008497998351231217,
+      "p99": 0.009666960759204809,
+      "max": 0.010498002666281536
+    },
+    "dropped_frames.capture_to_inference": {
+      "count": 50.0,
+      "mean": 3.88,
+      "min": 3.0,
+      "p50": 4.0,
+      "p95": 4.549999999999997,
+      "p99": 5.0,
+      "max": 5.0
+    },
+    "frame_age_ms": {
+      "count": 50.0,
+      "mean": 26.839356299564244,
+      "min": 13.682264000177383,
+      "p50": 21.29581049643457,
+      "p95": 52.77291824780404,
+      "p99": 66.0932356500998,
+      "max": 68.38859899714589
+    },
+    "grasp_ms": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "queue_capacity.capture_to_inference": {
+      "count": 50.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "p50": 1.0,
+      "p95": 1.0,
+      "p99": 1.0,
+      "max": 1.0
+    },
+    "queue_depth.capture_to_inference": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "queue_wait_ms.capture_to_inference": {
+      "count": 50.0,
+      "mean": 3.144298519715667,
+      "min": 0.06538800150156021,
+      "p50": 0.13988150097429752,
+      "p95": 25.648867850936917,
+      "p99": 37.04538134030996,
+      "max": 41.86346999928355
+    },
+    "ranking_safety_ms": {
+      "count": 50.0,
+      "mean": 0.02751143998466432,
+      "min": 0.01971600067918189,
+      "p50": 0.02536449937906582,
+      "p95": 0.03164120116707636,
+      "p99": 0.06531315946631361,
+      "max": 0.07732599988230504
+    },
+    "recording_ms": {
+      "count": 50.0,
+      "mean": 0.15415268004289828,
+      "min": 0.101041001471458,
+      "p50": 0.1359449997835327,
+      "p95": 0.24034949947235865,
+      "p99": 0.44040592998499006,
+      "max": 0.5592029992840253
+    },
+    "segmentation_ms": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "total_ms": {
+      "count": 50.0,
+      "mean": 23.239097820041934,
+      "min": 12.921713998366613,
+      "p50": 20.657024999309215,
+      "p95": 38.239551600963736,
+      "p99": 41.04300614733802,
+      "max": 41.665386997919995
+    },
+    "tracking_ms": {
+      "count": 50.0,
+      "mean": 0.07235727985971607,
+      "min": 0.0520410030731,
+      "p50": 0.0705244983691955,
+      "p95": 0.09552590090606826,
+      "p99": 0.10027591910329647,
+      "max": 0.10036999810836278
+    },
+    "workload.active_target_coast": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.active_target_fallback": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.active_target_fast_path": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.active_target_refresh": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.coasting_tracks": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.confirmed_tracks": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.deferred_tracks": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.depth_fused_tracks": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.depth_history_frames": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.depth_remap_calls": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.detector_above_threshold_candidates": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.detector_finite_confidence_candidates": {
+      "count": 50.0,
+      "mean": 300.0,
+      "min": 300.0,
+      "p50": 300.0,
+      "p95": 300.0,
+      "p99": 300.0,
+      "max": 300.0
+    },
+    "workload.detector_max_confidence": {
+      "count": 50.0,
+      "mean": 0.0073348569869995115,
+      "min": 0.00041866302490234375,
+      "p50": 0.0025014877319335938,
+      "p95": 0.03411102294921873,
+      "p99": 0.04782165527343746,
+      "max": 0.05682373046875
+    },
+    "workload.detector_output_candidates": {
+      "count": 50.0,
+      "mean": 300.0,
+      "min": 300.0,
+      "p50": 300.0,
+      "p95": 300.0,
+      "p99": 300.0,
+      "max": 300.0
+    },
+    "workload.eligible_detections": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.grasp_candidates": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.grasp_searches": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.pipeline_candidates": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.raw_detections": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.rejections": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.segmentation_calls": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.segmented_tracks": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "workload.tracks": {
+      "count": 50.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    }
+  },
+  "process_resources": {
+    "process_cpu_percent": {
+      "count": 6.0,
+      "mean": 52.43333333333334,
+      "min": 0.0,
+      "p50": 66.9,
+      "p95": 89.65,
+      "p99": 93.85000000000001,
+      "max": 94.9
+    },
+    "process_rss_mb": {
+      "count": 6.0,
+      "mean": 280.6881510416667,
+      "min": 0.0,
+      "p50": 331.490234375,
+      "p95": 509.046875,
+      "p99": 509.09062500000005,
+      "max": 509.1015625
+    },
+    "system_cpu_percent": {
+      "count": 6.0,
+      "mean": 47.583333333333336,
+      "min": 39.1,
+      "p50": 48.05,
+      "p95": 52.4,
+      "p99": 52.4,
+      "max": 52.4
+    },
+    "system_ram_percent": {
+      "count": 6.0,
+      "mean": 71.5,
+      "min": 69.9,
+      "p50": 71.30000000000001,
+      "p95": 73.35000000000001,
+      "p99": 73.39,
+      "max": 73.4
+    }
+  },
+  "tegrastats": {
+    "cpu_active_cores": {
+      "count": 4.0,
+      "mean": 6.0,
+      "min": 6.0,
+      "p50": 6.0,
+      "p95": 6.0,
+      "p99": 6.0,
+      "max": 6.0
+    },
+    "cpu_max_core_percent": {
+      "count": 4.0,
+      "mean": 57.75,
+      "min": 54.0,
+      "p50": 57.0,
+      "p95": 62.1,
+      "p99": 62.82,
+      "max": 63.0
+    },
+    "cpu_mean_percent": {
+      "count": 4.0,
+      "mean": 45.791666666666664,
+      "min": 38.666666666666664,
+      "p50": 46.33333333333333,
+      "p95": 51.20833333333333,
+      "p99": 51.708333333333336,
+      "max": 51.833333333333336
+    },
+    "gpu_util_percent": {
+      "count": 4.0,
+      "mean": 62.0,
+      "min": 50.0,
+      "p50": 57.5,
+      "p95": 79.7,
+      "p99": 82.34,
+      "max": 83.0
+    },
+    "input_power_average_mw": {
+      "count": 4.0,
+      "mean": 9984.5,
+      "min": 9692.0,
+      "p50": 9918.5,
+      "p95": 10358.0,
+      "p99": 10398.8,
+      "max": 10409.0
+    },
+    "input_power_mw": {
+      "count": 4.0,
+      "mean": 10408.75,
+      "min": 9616.0,
+      "p50": 10295.5,
+      "p95": 11337.25,
+      "p99": 11409.85,
+      "max": 11428.0
+    },
+    "power_vdd_cpu_gpu_cv_average_mw": {
+      "count": 4.0,
+      "mean": 3752.0,
+      "min": 3585.0,
+      "p50": 3711.0,
+      "p95": 3965.0,
+      "p99": 3993.8,
+      "max": 4001.0
+    },
+    "power_vdd_cpu_gpu_cv_mw": {
+      "count": 4.0,
+      "mean": 4000.75,
+      "min": 3509.0,
+      "p50": 3887.5,
+      "p95": 4628.25,
+      "p99": 4700.85,
+      "max": 4719.0
+    },
+    "power_vdd_in_average_mw": {
+      "count": 4.0,
+      "mean": 9984.5,
+      "min": 9692.0,
+      "p50": 9918.5,
+      "p95": 10358.0,
+      "p99": 10398.8,
+      "max": 10409.0
+    },
+    "power_vdd_in_mw": {
+      "count": 4.0,
+      "mean": 10408.75,
+      "min": 9616.0,
+      "p50": 10295.5,
+      "p95": 11337.25,
+      "p99": 11409.85,
+      "max": 11428.0
+    },
+    "power_vdd_soc_average_mw": {
+      "count": 4.0,
+      "mean": 2023.75,
+      "min": 1983.0,
+      "p50": 2008.0,
+      "p95": 2086.55,
+      "p99": 2094.11,
+      "max": 2096.0
+    },
+    "power_vdd_soc_mw": {
+      "count": 4.0,
+      "mean": 2095.75,
+      "min": 1983.0,
+      "p50": 2058.0,
+      "p95": 2261.35,
+      "p99": 2279.4700000000003,
+      "max": 2284.0
+    },
+    "system_ram_percent": {
+      "count": 4.0,
+      "mean": 70.50196850393701,
+      "min": 69.40944881889763,
+      "p50": 70.51181102362204,
+      "p95": 71.5511811023622,
+      "p99": 71.57007874015748,
+      "max": 71.5748031496063
+    },
+    "system_ram_total_mb": {
+      "count": 4.0,
+      "mean": 7620.0,
+      "min": 7620.0,
+      "p50": 7620.0,
+      "p95": 7620.0,
+      "p99": 7620.0,
+      "max": 7620.0
+    },
+    "system_ram_used_mb": {
+      "count": 4.0,
+      "mean": 5372.25,
+      "min": 5289.0,
+      "p50": 5373.0,
+      "p95": 5452.2,
+      "p99": 5453.64,
+      "max": 5454.0
+    },
+    "temperature_cpu_c": {
+      "count": 4.0,
+      "mean": 57.2575,
+      "min": 56.812,
+      "p50": 57.3905,
+      "p95": 57.43235,
+      "p99": 57.436069999999994,
+      "max": 57.437
+    },
+    "temperature_cv0_c": {
+      "count": 4.0,
+      "mean": 53.851,
+      "min": 53.718,
+      "p50": 53.8275,
+      "p95": 54.0028,
+      "p99": 54.02536,
+      "max": 54.031
+    },
+    "temperature_cv1_c": {
+      "count": 4.0,
+      "mean": 54.84325,
+      "min": 54.718,
+      "p50": 54.812,
+      "p95": 55.00279999999999,
+      "p99": 55.02536,
+      "max": 55.031
+    },
+    "temperature_cv2_c": {
+      "count": 4.0,
+      "mean": 51.65575,
+      "min": 51.593,
+      "p50": 51.671499999999995,
+      "p95": 51.687,
+      "p99": 51.687,
+      "max": 51.687
+    },
+    "temperature_gpu_c": {
+      "count": 4.0,
+      "mean": 58.46075,
+      "min": 58.156,
+      "p50": 58.453,
+      "p95": 58.73885,
+      "p99": 58.77257,
+      "max": 58.781
+    },
+    "temperature_max_c": {
+      "count": 4.0,
+      "mean": 58.46075,
+      "min": 58.156,
+      "p50": 58.453,
+      "p95": 58.73885,
+      "p99": 58.77257,
+      "max": 58.781
+    },
+    "temperature_soc0_c": {
+      "count": 4.0,
+      "mean": 55.17175,
+      "min": 55.125,
+      "p50": 55.1405,
+      "p95": 55.26225,
+      "p99": 55.27725,
+      "max": 55.281
+    },
+    "temperature_soc1_c": {
+      "count": 4.0,
+      "mean": 55.101,
+      "min": 54.968,
+      "p50": 55.1245,
+      "p95": 55.18235,
+      "p99": 55.18607,
+      "max": 55.187
+    },
+    "temperature_soc2_c": {
+      "count": 4.0,
+      "mean": 54.187,
+      "min": 54.062,
+      "p50": 54.187,
+      "p95": 54.2979,
+      "p99": 54.30918,
+      "max": 54.312
+    },
+    "temperature_tj_c": {
+      "count": 4.0,
+      "mean": 58.46075,
+      "min": 58.156,
+      "p50": 58.453,
+      "p95": 58.73885,
+      "p99": 58.77257,
+      "max": 58.781
+    }
+  },
+  "recommendations": [
+    "detection_ms is the dominant stage (98% of median total latency); optimize or isolate this stage first.",
+    "P95 frame age is 52.8 ms, above the 33.3 ms frame budget; use a bounded latest-frame queue.",
+    "Dropped frames were observed; compare frame age before increasing any queue capacity.",
+    "Low target validity coincides with sparse detector output; inspect detector maximum confidence, above-threshold candidates, and active-target coast counts before tuning downstream stages."
+  ],
+  "collection_duration_s": 5.043349498999305,
+  "collection_fps_including_startup": 11.896855455269385
+}

@@ -1,0 +1,33 @@
+{
+  "status": "complete",
+  "started_utc": "2026-07-31T13:12:26.356272+00:00",
+  "platform": "Linux-5.15.148-tegra-aarch64-with-glibc2.35",
+  "python": "3.10.20 (main, Jun 11 2026, 15:12:11) [GCC 14.3.0]",
+  "source_config": "/home/liancheng/Higgins/Visual-Deploy/runs/deploy_orin_device_engine.yaml",
+  "profile_config": "/home/liancheng/Higgins/Visual-Deploy/runs/thread_profiles/v8_gate_b_900/profile_config.yaml",
+  "command": [
+    "/home/liancheng/miniconda3/envs/visual/bin/python",
+    "/home/liancheng/Higgins/Visual-Deploy/scripts/run_realtime.py",
+    "--config",
+    "/home/liancheng/Higgins/Visual-Deploy/runs/thread_profiles/v8_gate_b_900/profile_config.yaml",
+    "--max-frames",
+    "900"
+  ],
+  "tegrastats_command": [
+    "/usr/bin/tegrastats",
+    "--interval",
+    "1000"
+  ],
+  "sample_interval_ms": 1000,
+  "warmup_frames": 60,
+  "exit_code": 0,
+  "finished_utc": "2026-07-31T13:13:00.531071+00:00",
+  "duration_s": 34.021626662000926,
+  "child_return_code": 0,
+  "timings_path": "/home/liancheng/Higgins/Visual-Deploy/runs/thread_profiles/v8_gate_b_900/pipeline_runs/20260731_131227_263190_fd32346b/timings.jsonl",
+  "frame_count": 900,
+  "expected_frame_count": 900,
+  "process_sample_count": 34,
+  "tegrastats_sample_count": 33,
+  "tegrastats_exited_early": false
+}
