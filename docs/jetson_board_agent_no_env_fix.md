@@ -5,13 +5,13 @@
 1. 在目标Orin NX上从ONNX重新生成TensorRT engine，消除跨设备engine警告；
 2. 保留仓库中现有的模型、engine、配置和本地文件；
 3. 收集一份可追溯的900帧验收报告；
-4. 在后续torch-free TensorRT运行时代码同步到板端后，验证PyTorch `sm_87`警告消失。
+4. 使用当前torch-free TensorRT运行时完成独立的Gate B板端验收。
 
 ## 1. 可直接交给板端agent的任务说明
 
 将下面这段话连同本文路径交给板端agent：
 
-> 在 `~/Higgins/Visual-Deploy` 中严格按照 `docs/jetson_board_agent_no_env_fix.md` 执行。不得运行任何 `apt`、`pip`、`conda`、驱动、JetPack、CUDA、TensorRT、PyTorch或固件安装/升级命令；不得使用 `git reset`、`git checkout`、`git clean`、递归删除或覆盖仓库中已有的engine；不得隐藏warning后宣称问题已经修复。先完成Gate A并回传证据。如果当前代码仍在TensorRT session中导入PyTorch，则在Gate A之后停止，不要自行修改Jetson环境。遇到脏工作树、残留运行进程、ONNX缺失、engine构建失败或相机不可用时停止并报告，不得自行清理用户文件或杀进程。
+> Gate A已经完成，本文第3节和第7节保留为历史操作与证据。执行Gate B时不要重复构建engine，改为严格按照`docs/gate_b_cudart_board_agent.md`中的提示词和`60 -> 900 -> 60`流程执行。不得修改Jetson环境，不得删除、覆盖或提交本地engine和配置。
 
 ## 2. 操作边界
 
@@ -321,30 +321,11 @@ V7通过条件：
 
 ## 4. Gate B：验证torch-free TensorRT运行时
 
-Gate B只能在仓库已经同步到“TensorRT session不再导入PyTorch、改用CUDA Runtime管理缓冲区和stream”的提交后执行。当前版本若仍匹配下面命令，则停止，不要修改Jetson环境：
+Gate B代码侧已改为直接使用JetPack自带的CUDA Runtime管理缓冲区、异步拷贝和stream，部署运行时不再导入PyTorch。板端完整命令、自动判定规则、报告回传方式和可复制给另一个agent的提示词统一放在：
 
-```bash
-. "$HOME/Higgins/Visual-Deploy/runs/jetson_agent_no_env_fix.vars"
-cd "$PROJECT_DIR"
+- [`docs/gate_b_cudart_board_agent.md`](gate_b_cudart_board_agent.md)
 
-grep -nE 'import torch|torch\.cuda|torch\.empty' visual_deploy/inference/session.py || true
-```
-
-如果仍有TensorRT运行时PyTorch依赖，向主开发agent回报：
-
-```text
-Gate A已完成，板端engine已重新构建。Gate B阻塞：当前提交的
-visual_deploy/inference/session.py仍依赖PyTorch CUDA。未修改Jetson环境，
-未屏蔽warning，等待torch-free cudart运行时提交。
-```
-
-同步到torch-free提交后，重新使用同一板端engine和本地配置执行60帧与900帧测试。Gate B额外通过条件：
-
-- `child_stderr.log` 中不再出现PyTorch `sm_87` warning；
-- TensorRT检测和分割输出契约不变；
-- 关闭后CUDA缓冲区和stream正常释放；
-- 900帧稳定性与V7不退化；
-- 全程未执行任何环境安装、卸载或升级命令。
+必须使用V7已经在本机生成的两份engine，连续执行`60 -> 900 -> 60`，中间不得reboot。只有三段均完成、错误扫描为空、后置60帧可立即启动，才能确认CUDA资源释放与Gate B设备验收通过。
 
 ## 5. 回传报告
 
@@ -436,9 +417,9 @@ git commit -m "test: add Orin device-built engine report"
 
 构建日志：`runs/device_engines/orin_nx/build.log`
 
-### Gate B ⛔ 阻塞
+### Gate B历史状态：V7时阻塞，现等待V8板端验收
 
-`visual_deploy/inference/session.py` 仍包含 14 处 `torch` 导入/调用（`import torch`、`torch.cuda`、`torch.empty` 等）。等待 torch-free cudart 运行时提交。
+V7采集时，`visual_deploy/inference/session.py` 仍包含PyTorch CUDA调用，因此报告中的`sm_87`警告是当时真实状态。当前仓库已实现torch-free cudart运行时；不要改写V7历史报告，按独立V8 Gate B流程重新采集证据。
 
 ### 提交
 

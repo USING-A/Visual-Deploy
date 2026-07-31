@@ -106,7 +106,7 @@ Sparse debug viewer:
 Viewer keys are `q`/`Esc` quit, `p` pause, `m` mask, `d` depth, and `s` snapshot.
 Closing the window with the window-manager `X` also terminates the loop. All
 exit paths explicitly close the RealSense source, model sessions, TensorRT
-contexts/engines/runtime objects, and the PyTorch CUDA cache.
+contexts/engines/runtime objects, direct CUDA buffers, and CUDA streams.
 The viewer enables only the in-memory debug snapshot it needs.
 
 ## Runtime switches
@@ -243,26 +243,30 @@ tegrastats stream returns a typed nonzero exit status and remains recorded in
 
 1. Install a matching JetPack 6.2.x stack and verify TensorRT and CUDA.
 2. Install and verify the D435i with `realsense-viewer`.
-3. Install the NVIDIA PyTorch wheel that matches that exact JetPack release.
-4. Create a virtual environment with system packages visible, then install
+3. Create a virtual environment with system packages visible, then install
    `requirements-jetson.txt` and this project with `--no-deps`.
-5. Copy the ONNX files to the Jetson and build `.engine` files on that Jetson:
+4. Copy the ONNX files to the Jetson and build `.engine` files on that Jetson:
 
 ```bash
 python3 scripts/build_tensorrt_engines.py \
   --trtexec /usr/src/tensorrt/bin/trtexec
 ```
 
-6. Verify the engine paths in `configs/deploy.yaml`; both production backends are
+5. Verify the engine paths in `configs/deploy.yaml`; both production backends are
    already set to `tensorrt`, and both model sections enable
    `reuse_buffers: true`.
-7. Run a fixed offline RGB-D check before connecting the realtime camera.
+6. Run a fixed offline RGB-D check before connecting the realtime camera.
 
 With TensorRT buffer reuse enabled, each fixed-shape model allocates and binds
 its CUDA input/output buffers once, then copies new inputs into the same device
 storage. A shape or dtype change rebuilds the cache. Set `reuse_buffers: false`
 under both `detection` and `segmentation` for immediate rollback to per-call
 allocation.
+
+The TensorRT runtime talks to JetPack's existing `libcudart` directly and does
+not import PyTorch, PyCUDA, CuPy, or an additional CUDA Python package. For the
+no-environment-change Orin acceptance sequence and a copy-ready board-agent
+prompt, see [Gate B cudart board validation](docs/gate_b_cudart_board_agent.md).
 
 TensorRT engines must not be copied between different TensorRT/JetPack/device
 stacks. Full commands and checks are in [docs/deployment.md](docs/deployment.md).

@@ -139,10 +139,11 @@ repository.
 
 ### 5.3 Install the Python runtime
 
-The TensorRT engine session uses CUDA tensors supplied by PyTorch. Install the
-NVIDIA PyTorch wheel that matches the installed JetPack, following NVIDIA's
-Jetson PyTorch compatibility table. Do not install an arbitrary x86 or generic
-CUDA wheel.
+The TensorRT engine session calls JetPack's existing CUDA Runtime (`libcudart`)
+directly for device allocation, asynchronous copies, and streams. PyTorch,
+PyCUDA, CuPy, and an extra CUDA Python wheel are not runtime dependencies. Keep
+the JetPack-provided TensorRT and CUDA libraries together; do not replace them
+with unrelated PyPI builds.
 
 ```bash
 python3 -m venv --system-site-packages .venv
@@ -151,9 +152,10 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements-jetson.txt
 python -m pip install -e . --no-deps
 python - <<'PY'
-import cv2, numpy, pyrealsense2, tensorrt, torch, yaml
+import ctypes.util
+import cv2, numpy, pyrealsense2, tensorrt, yaml
 print('TensorRT', tensorrt.__version__)
-print('Torch CUDA', torch.cuda.is_available())
+print('CUDA Runtime', ctypes.util.find_library('cudart'))
 PY
 ```
 
@@ -425,7 +427,7 @@ short runs.
    ```bash
    test -f weights/yolov10_sam_robust_standard.engine
    test -f weights/rgbd_gcnet_l03_robustft.engine
-   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_capability())"
+   python -c "from visual_deploy.inference.cuda_runtime import CudaRuntime; print('CUDA device', CudaRuntime(0).device_id)"
    ```
 
 2. Record the device state before each run:
@@ -575,8 +577,8 @@ the paired scheduler-on/off measurement above as the current acceptance evidence
 
 Continue in this order after the device comparison:
 
-1. remove the Orin compute-capability warning with the JetPack-matched PyTorch build;
-2. retain the V5-validated TensorRT buffer reuse implemented in section 8.5;
+1. complete the Gate B device acceptance for the torch-free CUDA Runtime path;
+2. retain the TensorRT buffer reuse implemented in section 8.5;
 3. device-validate the exact grasp median/MAD optimization in section 8.6;
 4. tune the active-target refresh interval only if a stable two-apple run shows a need;
 5. evaluate INT8 or dynamic batching only as a separate accuracy-gated experiment.
@@ -591,17 +593,22 @@ The production configuration enables `reuse_buffers: true` independently under
 `detection` and `segmentation`. For the fixed YOLOv10 and 256 x 256 GCNet engine
 inputs, the TensorRT session now:
 
-1. allocates input/output CUDA tensors and binds their addresses on the first call;
-2. copies each new NumPy input into the existing input tensor;
+1. allocates input/output device buffers through JetPack `libcudart` and binds their addresses on the first call;
+2. queues each NumPy input copy on the session-owned CUDA stream;
 3. enqueues inference on one session-owned non-default CUDA stream;
-4. synchronizes that stream and returns a fresh CPU NumPy output;
+4. queues output copies, synchronizes once, and returns fresh CPU NumPy arrays;
 5. rebuilds all buffers and addresses if an input shape or dtype changes.
 
 This preserves the existing output lifetime and serialized model contract while
 removing steady-state CUDA tensor allocation and TensorRT address binding. Expect
 slightly higher persistent CUDA memory while the process is alive, but less
 allocator churn and fragmentation. `pipeline.close()` releases the cache, stream,
-native TensorRT objects, and PyTorch CUDA cache.
+and native TensorRT objects. The failure path synchronizes queued CUDA work before
+releasing per-call buffers.
+
+This is the Gate B code path. Run the documented `60 -> 900 -> 60` Orin sequence
+before declaring device acceptance; see
+[Gate B cudart board validation](gate_b_cudart_board_agent.md).
 
 For rollback, set both model switches to false:
 
@@ -671,8 +678,8 @@ and physical interlocks belong to the robot control system.
 
 - [NVIDIA JetPack 6.2](https://developer.nvidia.com/embedded/jetpack-sdk-62)
 - [NVIDIA JetPack documentation](https://docs.nvidia.com/jetson/jetpack/)
-- [NVIDIA PyTorch for Jetson installation](https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/index.html)
-- [TensorRT Developer Guide](https://docs.nvidia.com/deeplearning/tensorrt/pdf/TensorRT-Developer-Guide.pdf)
+- [NVIDIA CUDA Runtime API](https://docs.nvidia.com/cuda/cuda-runtime-api/)
+- [TensorRT Python inference guide](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/python-api-docs.html)
 - [TensorRT 10 to 11 `trtexec` migration](https://docs.nvidia.com/deeplearning/tensorrt/11.1.0/api/migration/tensorrt-10x-to-11x-trtexec.html)
 - [Jetson `tegrastats`](https://docs.nvidia.com/jetson/archives/r34.1/DeveloperGuide/text/AT/JetsonLinuxDevelopmentTools/TegrastatsUtility.html)
 - [RealSense Jetson installation](https://github.com/realsenseai/librealsense/blob/master/doc/installation_jetson.md)
