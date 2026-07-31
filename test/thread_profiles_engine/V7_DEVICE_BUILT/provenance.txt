@@ -1,0 +1,29 @@
+git_commit=6a48d92ab7d896cc3f7ceedc82d87e89f7f0f7d4
+git_status_begin
+## main...origin/main
+git_status_end
+platform=Linux nvidia-desktop 5.15.148-tegra #1 SMP PREEMPT Thu Sep 18 15:08:33 PDT 2025 aarch64 aarch64 aarch64 GNU/Linux
+l4t_begin
+# R36 (release), REVISION: 4.7, GCID: 42132812, BOARD: generic, EABI: aarch64, DATE: Thu Sep 18 22:54:44 UTC 2025
+# KERNEL_VARIANT: oot
+TARGET_USERSPACE_LIB_DIR=nvidia
+TARGET_USERSPACE_LIB_DIR_PATH=usr/lib/aarch64-linux-gnu/nvidia
+l4t_end
+&&&& RUNNING TensorRT.trtexec [TensorRT v100300] # /usr/src/tensorrt/bin/trtexec --version
+/home/liancheng/miniconda3/envs/visual/lib/python3.10/site-packages/torch/cuda/__init__.py:422: UserWarning: Found GPU0 Orin which is of compute capability (CC) 8.7.
+The following list shows the CCs this version of PyTorch was built for and the hardware CCs it supports:
+- 8.0 which supports hardware CC >=8.0,<9.0 except {8.7}
+- 9.0 which supports hardware CC >=9.0,<10.0
+No published PyTorch CUDA builds for release 2.13.0+cu126 support this GPU. Visit https://pytorch.org/get-started/locally/ to find a compatible release.
+  _warn_unsupported_code(d, device_cc, code_ccs)
+python 3.10.20 (main, Jun 11 2026, 15:12:11) [GCC 14.3.0]
+tensorrt 10.3.0
+torch 2.13.0+cu126
+torch_cuda 12.6
+cuda_available True
+device_capability (8, 7)
+compiled_arches ['sm_80', 'sm_90']
+3632ee3f270ddcc3d849cb143f0fe9fca7fa6f220b04ae7b202b54bf168a5330  weights/yolov10_sam_robust_standard.onnx
+a90917388178c223c441e66bd0c363c7c2af8e948ddf9cbaa92bf763d4390330  weights/rgbd_gcnet_l03_robustft.onnx
+b489dafaf3620cc4d4628df8111403d53d3863a5df29c5f0d270c5aa4485e894  /home/liancheng/Higgins/Visual-Deploy/runs/device_engines/orin_nx/yolov10_sam_robust_standard.engine
+64afd9a619aacb4d7b67a848340512ce6d77442903fc634d0da8921787f4121d  /home/liancheng/Higgins/Visual-Deploy/runs/device_engines/orin_nx/rgbd_gcnet_l03_robustft.engine
