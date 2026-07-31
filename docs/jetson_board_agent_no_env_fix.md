@@ -391,3 +391,60 @@ git commit -m "test: add Orin device-built engine report"
 | Gate A和Gate B均通过 | 两类警告均在不修改Jetson环境的条件下修复 |
 | Gate A失败 | engine、TensorRT、进程、相机或资源仍有阻塞，不得继续900帧验收 |
 | 仅隐藏warning | 不算修复 |
+
+---
+
+## 7. 执行记录与当前状态
+
+**执行日期**: 2026-07-31
+
+### Gate A ✅ 通过
+
+| 检查项 | 结果 |
+|---|---|
+| 3.1 路径验证 | `python` 和 `trtexec` 均可执行 |
+| 3.2 只读检查 | Git 干净，无残留进程，磁盘 171G 可用 |
+| 3.3 ONNX/engine 哈希 | ONNX 匹配契约，现有 engine 未修改 |
+| 3.4 板端 engine 构建 | YOLO 510s / 7.1 MiB，GCNet 532s / 21.2 MiB |
+| 3.5 本地配置 | 写入 `runs/deploy_orin_device_engine.yaml`，Git 干净 |
+| 3.6 60帧短测试 | `complete`，60/60 帧，exit 0，**无跨设备 engine 警告** |
+| 3.7 900帧验收 | `complete`，900/900 帧，exit 0 |
+
+### V7 性能
+
+| 指标 | 值 |
+|---|---|
+| P50 total | 105.9 ms |
+| FPS | 8.32 |
+| 有效目标率 | 100% |
+| confirmed_tracks | 2 |
+| fast_path | 96.7% |
+| 拒绝率 | 0% |
+
+### 警告扫描
+
+- ❌ 跨设备 engine 警告：**已消除**
+- ❌ NvMap / OOM / Traceback / TRT error：**无**
+- ⚠️ PyTorch `sm_87` 警告：**仍存在**（非 Gate A 失败条件）
+
+### Engine 位置与哈希
+
+| Engine | 路径 | SHA-256 |
+|---|---|---|
+| YOLO | `runs/device_engines/orin_nx/yolov10_sam_robust_standard.engine` | `b489dafaf362...` |
+| GCNet | `runs/device_engines/orin_nx/rgbd_gcnet_l03_robustft.engine` | `64afd9a619aa...` |
+
+构建日志：`runs/device_engines/orin_nx/build.log`
+
+### Gate B ⛔ 阻塞
+
+`visual_deploy/inference/session.py` 仍包含 14 处 `torch` 导入/调用（`import torch`、`torch.cuda`、`torch.empty` 等）。等待 torch-free cudart 运行时提交。
+
+### 提交
+
+- `6cb5b3d` — `test: add Orin device-built engine report (V7 Gate A)`
+- 报告位置：`test/thread_profiles_engine/V7_DEVICE_BUILT/`
+
+### Jetson 环境
+
+**零次 apt / pip / conda 操作。环境完全未修改。**
